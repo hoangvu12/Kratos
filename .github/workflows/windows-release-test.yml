@@ -1,0 +1,39 @@
+name: Windows release experiment
+
+on:
+  push:
+    branches: [windows-release-test]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-experiment
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    if: github.repository == 'hoangvu12/comet'
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Locate shader compiler
+        run: |
+          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $fxc) { throw 'Windows SDK shader compiler missing' }
+          "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
+      - uses: Swatinem/rust-cache@v2
+      - name: Build Windows executable
+        run: cargo build --release --locked -p zeron
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeron-windows-x86_64
+          path: target/release/zeron.exe
+          if-no-files-found: error
+          retention-days: 7
