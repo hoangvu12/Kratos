@@ -10,13 +10,16 @@ permissions:
 
 concurrency:
   group: windows-release-experiment
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   windows:
     if: github.repository == 'hoangvu12/comet'
     runs-on: windows-2022
     timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: windows-updater-test-${{ github.run_id }}
     defaults:
       run:
         shell: pwsh
@@ -29,11 +32,48 @@ jobs:
           if (-not $fxc) { throw 'Windows SDK shader compiler missing' }
           "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
-      - name: Build Windows executable
-        run: cargo build --release --locked -p zeron
+      - name: Updater tests
+        run: cargo test --locked -p zeron-update
+      - name: Package baseline
+        run: |
+          $feed = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG"
+          ./scripts/package-windows.ps1 -ReleasesUrl $feed
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline packaging failed' }
+          $manifest = Get-Content target/package/manifest.json -Raw | ConvertFrom-Json
+          "BASELINE_VERSION=$($manifest.version)" >> $env:GITHUB_ENV
+      - name: Build next version from the same source
+        run: |
+          $parts = $env:BASELINE_VERSION.Split('.')
+          $next = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+          $cargo = Get-Content Cargo.toml -Raw
+          $cargo = $cargo.Replace(('version = "' + $env:BASELINE_VERSION + '"'), ('version = "' + $next + '"'))
+          Set-Content -Encoding utf8NoBOM -NoNewline Cargo.toml $cargo
+          cargo update --workspace --offline
+          if ($LASTEXITCODE -ne 0) { throw 'Test-version lockfile update failed' }
+          ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { throw 'Next-version packaging failed' }
+          "NEXT_VERSION=$next" >> $env:GITHUB_ENV
+      - name: Publish fork-only prerelease
+        run: |
+          gh release create $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease --latest=false --title "Windows updater experiment $env:GITHUB_RUN_ID" --notes 'Experimental Windows portable builds. Baseline and next version use the same source with different version numbers; this is not an upstream release.'
+          if ($LASTEXITCODE -ne 0) { throw 'Prerelease creation failed' }
+          $assets = Get-ChildItem target/package -File | Where-Object { $_.Extension -in '.zip','.exe','.json' }
+          gh release upload $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY @($assets.FullName) --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Prerelease upload failed' }
+      - name: Update the released baseline from GitHub
+        run: |
+          $download = Join-Path $env:RUNNER_TEMP 'released-baseline'
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern "zeron-$env:BASELINE_VERSION-windows-x86_64.zip" --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline download failed' }
+          $manifest = Get-Content target/package/manifest.json -Raw | ConvertFrom-Json
+          $hash = $manifest.files."zeron-$env:NEXT_VERSION-windows-x86_64.exe".sha256
+          ./scripts/test-windows-update.ps1 -BaselineZip "$download/zeron-$env:BASELINE_VERSION-windows-x86_64.zip" -ExpectedVersion $env:NEXT_VERSION -ExpectedSha256 $hash
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: zeron-windows-x86_64
-          path: target/release/zeron.exe
-          if-no-files-found: error
+          name: windows-release-packages
+          path: |
+            target/package/*.zip
+            target/package/*.json
+          if-no-files-found: warn
           retention-days: 7
