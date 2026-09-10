@@ -14,7 +14,6 @@ name = "harness-native-fixture"
 path = "tests/fixtures/native_agent.rs"
 required-features = ["native-fixture"]
 
-
 [dependencies]
 zeron-proto.workspace = true
 base64 = "0.22"

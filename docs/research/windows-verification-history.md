@@ -4,6 +4,10 @@ Archived from the development guide during PR cleanup on 2026-09-11.
 These are historical observations, not fresh verification of the current tree.
 For current setup and commands, see [Windows development](../reference/windows-development.md).
 
+The temporary renderer patch described below has since been replaced by the
+merged [Zui fix](https://github.com/zeronsh/zui/pull/7). References to a local
+Cargo patch describe the historical test setup, not the current dependency graph.
+
 # Windows development foundation
 
 Status: **source-build development only, not a supported Windows release**. This
@@ -114,7 +118,7 @@ Synthetic PNGs, captures, measurements, and logs remain in unique ignored
 
 The root Cargo patch replaces **only** `gpui_windows` with a project-owned copy.
 All other GPUI crates retain the original revision and dependency identity. See
-[vendor provenance](https://github.com/zeronsh/comet/blob/11f0062/vendor/gpui_windows/UPSTREAM.md). This fixes mismatched
+[upstream renderer fix](https://github.com/zeronsh/zui/pull/7). This fixes mismatched
 Rust/HLSL structured-buffer fields/strides and ports the pinned fork's quad/image
 edge fades. It does not implement Windows backdrop blur.
 
