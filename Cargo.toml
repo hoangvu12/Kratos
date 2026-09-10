@@ -135,3 +135,8 @@ opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Keep the full zui stack pinned at 07fd941 while overriding only its Windows
+# backend with the repo-owned shader ABI fix documented in the vendor crate.
+[patch."https://github.com/zeronsh/zui"]
+gpui_windows = { path = "vendor/gpui_windows" }
