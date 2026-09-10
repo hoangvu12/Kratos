@@ -243,7 +243,12 @@ pub(crate) fn find_on_paths_matching_with(
                         .join(package),
                     scope.join(package),
                 ]
-                .map(|root| root.join("vendor").join(triple).join("bin").join("codex.exe"))
+                .map(|root| {
+                    root.join("vendor")
+                        .join(triple)
+                        .join("bin")
+                        .join("codex.exe")
+                })
             })
             .collect();
         candidates.extend(payloads);
