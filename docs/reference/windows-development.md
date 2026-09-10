@@ -108,7 +108,7 @@ Run on an interactive Windows desktop:
 
 ```powershell
 cargo build --release --locked -p zeron-ui --example windows-render-fixture --features windows-render-fixture
-cargo test --release --locked -p gpui_windows --lib layout_tests
+cargo test --release --locked -p gpui_windows --lib
 ./scripts/test-windows-lifecycle.ps1 -Runs 5
 ./scripts/test-windows-rendering.ps1
 ```
@@ -120,10 +120,10 @@ helper captures only the fixture's client window and has a 15-second timeout.
 Evidence stays in unique ignored `target/windows-render-*` and
 `target/windows-lifecycle-*` directories.
 
-The scoped [vendor patch](../../vendor/gpui_windows/UPSTREAM.md) aligns CPU/HLSL
-buffer layouts and implements the pinned fork's quad/image edge fades. Other
-GPUI crates retain their pinned source. This temporary patch stays until a
-compatible upstream zui revision includes the fix; backdrop blur is not included.
+The pinned Zui revision includes the [upstream DirectX fix](https://github.com/zeronsh/zui/pull/7)
+for CPU/HLSL buffer layouts and quad/image edge fades. All GPUI crates use that
+revision directly; no local renderer patch is needed. In-app backdrop blur
+remains unsupported on Windows.
 
 Layout tests check CPU offsets and HLSL source declarations, not compiled-shader
 reflection. Native pixel checks complement them. Historical before/after images

@@ -114,7 +114,7 @@ Synthetic PNGs, captures, measurements, and logs remain in unique ignored
 
 The root Cargo patch replaces **only** `gpui_windows` with a project-owned copy.
 All other GPUI crates retain the original revision and dependency identity. See
-[vendor provenance](../../vendor/gpui_windows/UPSTREAM.md). This fixes mismatched
+[vendor provenance](https://github.com/zeronsh/comet/blob/11f0062/vendor/gpui_windows/UPSTREAM.md). This fixes mismatched
 Rust/HLSL structured-buffer fields/strides and ports the pinned fork's quad/image
 edge fades. It does not implement Windows backdrop blur.
 
