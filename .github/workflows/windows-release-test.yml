@@ -32,6 +32,9 @@ jobs:
           if (-not $fxc) { throw 'Windows SDK shader compiler missing' }
           "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-workspace-crates: true
       - name: Updater tests
         run: cargo test --locked -p zeron-update
       - name: Package baseline
@@ -47,7 +50,7 @@ jobs:
           $next = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
           $cargo = Get-Content Cargo.toml -Raw
           $cargo = $cargo.Replace(('version = "' + $env:BASELINE_VERSION + '"'), ('version = "' + $next + '"'))
-          Set-Content -Encoding utf8NoBOM -NoNewline Cargo.toml $cargo
+          [IO.File]::WriteAllText((Join-Path $PWD 'Cargo.toml'), $cargo, [Text.UTF8Encoding]::new($false))
           cargo update --workspace --offline
           if ($LASTEXITCODE -ne 0) { throw 'Test-version lockfile update failed' }
           ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG"
