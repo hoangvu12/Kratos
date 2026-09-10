@@ -37,6 +37,19 @@ Existing binaries do not include subsequent source edits.
 Engine ownership uses an OS file lock. `engine.lock.pid` is diagnostic only;
 a stale PID does not establish that an engine is running.
 
+### Frosted appearance
+
+The Frosted surface preference requests native Acrylic for the window chrome
+(sidebar and space around the content cards). Windows **Settings >
+Personalization > Colors > Transparency effects** must be enabled; when it is
+off, Windows disables Acrylic. Zeron does not change this system preference.
+See Microsoft's [Acrylic material documentation](https://learn.microsoft.com/en-us/windows/apps/design/style/acrylic).
+
+Compare Frosted and Opaque with the app focused and a colorful window behind
+it. Content cards, menus, and popovers remain opaque on Windows: the DirectX
+renderer does not implement in-app `BackdropBlur` yet. Native window Acrylic
+and in-app blur are separate capabilities.
+
 ## Agent discovery and terminals
 
 ACP, Claude, and Codex share native executable discovery. It searches PATH and

@@ -12,13 +12,17 @@ reads invalid atlas metadata.
 
 Zeron-local changes are intentionally limited to:
 
-- a standalone manifest whose GPUI-family dependencies retain the exact same
-  zui URL and revision;
-- matching DirectX HLSL declarations and the same squared, four-edge fade used
-  by the pinned Metal and WGPU shaders;
-- focused CPU/HLSL layout and shader-use regression tests.
+- `Cargo.toml`: a standalone manifest whose GPUI-family dependencies retain the
+  exact same zui URL and revision;
+- `src/shaders.hlsl`: matching DirectX HLSL declarations and the same squared,
+  four-edge fade used by the pinned Metal and WGPU shaders;
+- `src/gpui_windows.rs` and the new `src/layout_tests.rs`: focused CPU/HLSL
+  layout and shader-use regression tests.
+
+Remove this vendor directory and the root `[patch]` override when Comet updates
+to a zui revision containing the equivalent DirectX layout and edge-fade repair.
+The fixture, probes, and regression evidence outside this directory may remain.
 
 The Windows renderer still deliberately ignores `BackdropBlur` paint
-operations. This patch does not claim or emulate backdrop blur; Windows keeps
-its existing opaque/transparent composition behavior until a real DirectX
-implementation is designed and tested.
+operations. Native window Acrylic works independently; in-app floating
+surfaces remain opaque until DirectX supports these blur operations.
