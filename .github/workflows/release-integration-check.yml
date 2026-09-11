@@ -1,0 +1,105 @@
+name: PR 313 release integration check
+'on':
+  push:
+    branches:
+    - release-integration-check-313
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+    - uses: actions/checkout@v4
+    - name: rust toolchain (rust-toolchain.toml)
+      run: rustup show active-toolchain || rustup toolchain install
+    - name: Locate Windows SDK shader compiler
+      run: "$fxc = Get-ChildItem \"${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe\"\
+        \ |\n  Sort-Object FullName -Descending | Select-Object -First 1\nif (-not\
+        \ $fxc) { throw 'Windows SDK fxc.exe is required for GPUI release shaders'\
+        \ }\n\"GPUI_FXC_PATH=$($fxc.FullName)\" >> $env:GITHUB_ENV\n"
+    - uses: Swatinem/rust-cache@v2
+    - name: package portable app
+      run: ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: windows-${{ runner.arch }}
+        path: 'target/package/*.zip
+
+          target/package/*.exe
+
+          '
+        if-no-files-found: error
+    - name: Verify packaged app and update feed
+      run: '$zip = Get-ChildItem target/package/*.zip | Select-Object -First 1
+
+        $install = Join-Path $env:RUNNER_TEMP ''portable release check''
+
+        Expand-Archive -LiteralPath $zip.FullName -DestinationPath $install
+
+        $config = Get-Content (Join-Path $install ''zeron-update.json'') -Raw | ConvertFrom-Json
+
+        if ($config.releases_url -ne "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download")
+        { throw ''Wrong update feed'' }
+
+        $exe = Join-Path $install ''zeron.exe''
+
+        $version = & $exe --version
+
+        if ($LASTEXITCODE -ne 0 -or $version -notmatch ''^zeron (\d+\.\d+\.\d+)$'')
+        { throw ''Packaged executable cannot run'' }
+
+        $payload = "target/package/zeron-$($Matches[1])-windows-x86_64.exe"
+
+        if ((Get-FileHash -LiteralPath $exe).Hash -ne (Get-FileHash -LiteralPath $payload).Hash)
+        { throw ''Updater payload differs from packaged executable'' }
+
+        $env:ZERON_DATA_DIR = Join-Path $env:RUNNER_TEMP ''release-check-profile''
+
+        $env:ZERON_IPC_PORT = ''0''
+
+        & $exe status
+
+        if ($LASTEXITCODE -ne 0) { throw ''Packaged app startup failed'' }
+
+        '
+  publish-validation:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+    - name: Lint release workflow
+      run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck=
+        -pyflakes= .github/workflows/release.yml
+    - name: Install YAML parser
+      run: python3 -m pip install --user pyyaml
+    - name: Validate production publish steps with fixtures
+      run: "python3 - <<'PY'\nimport hashlib, json, os, subprocess, tempfile, tomllib\n\
+        from pathlib import Path\nimport yaml\nworkflow = yaml.safe_load(Path('.github/workflows/release.yml').read_text())\n\
+        jobs = workflow['jobs']\nassert set(jobs['publish']['needs']) == {'linux',\
+        \ 'macos', 'windows'}\nassert jobs['publish']['if'] == \"startsWith(github.ref,\
+        \ 'refs/tags/v')\"\nsteps = jobs['publish']['steps']\nguard = next(s['run']\
+        \ for s in steps if s.get('name', '').startswith('version guard'))\nmanifest\
+        \ = next(s['run'] for s in steps if s.get('name') == 'updater manifest')\n\
+        publish = next(s for s in steps if s.get('uses', '').startswith('softprops/'))\n\
+        assert 'manifest.json' in publish['with']['files'].splitlines()\nversion =\
+        \ tomllib.loads(Path('Cargo.toml').read_text())['workspace']['package']['version']\n\
+        with tempfile.TemporaryDirectory() as name:\n    root = Path(name)\n    dist\
+        \ = root / 'dist'\n    dist.mkdir()\n    suffixes = ['linux-x86_64.tar.gz',\
+        \ 'linux-aarch64.tar.gz', 'macos-arm64.dmg', 'macos-arm64-app.tar.gz', 'windows-x86_64.zip',\
+        \ 'windows-x86_64.exe']\n    for suffix in suffixes:\n        (dist / f'zeron-{version}-{suffix}').write_bytes(suffix.encode())\n\
+        \    env = {**os.environ, 'GITHUB_REF_NAME': f'v{version}', 'VERSION': version,\
+        \ 'GITHUB_ENV': str(root / 'env')}\n    def run(script):\n        return subprocess.run(['bash',\
+        \ '-e', '-o', 'pipefail', '-c', script], cwd=root, env=env).returncode\n \
+        \   assert run(guard) == 0\n    assert run(manifest) == 0\n    result = json.loads((root\
+        \ / 'manifest.json').read_text())\n    assert result['version'] == version\n\
+        \    expected = {f.name: {'sha256': hashlib.sha256(f.read_bytes()).hexdigest()}\
+        \ for f in dist.iterdir()}\n    assert result['files'] == expected\n    payload\
+        \ = dist / f'zeron-{version}-windows-x86_64.exe'\n    payload.unlink()\n \
+        \   assert run(guard) != 0, 'Missing Windows payload was accepted'\n    payload.write_bytes(b'restored')\n\
+        \    env['GITHUB_REF_NAME'] = 'v999.0.0'\n    assert run(guard) != 0, 'Wrong\
+        \ release tag was accepted'\nprint('PASS: complete manifest, exact checksums,\
+        \ missing-payload rejection, tag mismatch rejection, all-platform publishing\
+        \ gate')\nPY\n"
