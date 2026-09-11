@@ -231,9 +231,7 @@ impl InstallKind {
         match self {
             Self::MacApp { .. } => stage_mac_app(edge_url, manifest, data_dir).await,
             #[cfg(windows)]
-            Self::WindowsPortable { directory } => {
-                windows::stage(edge_url, manifest, directory).await
-            }
+            Self::WindowsPortable { directory } => windows::stage(edge_url, manifest, directory).await,
             _ => bail!("this installation does not support desktop updates"),
         }
     }
@@ -272,8 +270,8 @@ fn detect_install_from_for_os(exe: &Path, home: Option<&Path>, os: &str) -> Inst
             directory: exe.parent().unwrap().to_owned(),
         };
     }
-    // Windows has no in-process installer yet. Never interpret a coincidental
-    // `%HOME%\.zeron\app` layout as the Unix symlink-managed installation.
+    // Never interpret a coincidental Windows `%HOME%\.zeron\app` layout as
+    // the Unix symlink-managed installation.
     if !managed_updates_supported(os) {
         return InstallKind::Unmanaged;
     }
