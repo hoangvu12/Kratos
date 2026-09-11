@@ -1,4 +1,4 @@
-name: PR 313 Unix terminal check
+name: PR 313 macOS baseline comparison
 on:
   push:
     branches: [compatibility-terminal-313]
@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest]
+        os: [macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -18,5 +18,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Native terminal lifecycle
-        run: cargo test --locked -p zeron-engine --test m5_repos_diffs_terminals terminal_ -- --nocapture
+      - name: PR shared runtime tests
+        run: cargo test --locked --no-fail-fast -p zeron-engine -p zeron-harness -p zeron-update --lib
+      - uses: actions/checkout@v4
+        if: always() && !cancelled()
+        with:
+          ref: 67466c7bd8dea4e11cdc4e55a7d05199acd5f8bd
+          clean: false
+      - name: Upstream shared runtime tests
+        if: always() && !cancelled()
+        run: cargo test --locked --no-fail-fast -p zeron-engine -p zeron-harness -p zeron-update --lib
