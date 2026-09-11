@@ -79,11 +79,11 @@ jobs:
       run: "python3 - <<'PY'\nimport hashlib, json, os, subprocess, tempfile, tomllib\n\
         from pathlib import Path\nimport yaml\nworkflow = yaml.safe_load(Path('.github/workflows/release.yml').read_text())\n\
         jobs = workflow['jobs']\nassert set(jobs['publish']['needs']) == {'linux',\
-        \ 'macos', 'windows'}\nassert jobs['publish']['if'] == \"startsWith(github.ref,\
-        \ 'refs/tags/v')\"\nsteps = jobs['publish']['steps']\nguard = next(s['run']\
-        \ for s in steps if s.get('name', '').startswith('version guard'))\nmanifest\
-        \ = next(s['run'] for s in steps if s.get('name') == 'updater manifest')\n\
-        publish = next(s for s in steps if s.get('uses', '').startswith('softprops/'))\n\
+        \ 'macos', 'windows'}\nassert jobs['publish']['if'] == \"github.event_name\
+        \ == 'push' && startsWith(github.ref, 'refs/tags/v')\"\nsteps = jobs['publish']['steps']\n\
+        guard = next(s['run'] for s in steps if s.get('name', '').startswith('version\
+        \ guard'))\nmanifest = next(s['run'] for s in steps if s.get('name') == 'updater\
+        \ manifest')\npublish = next(s for s in steps if s.get('uses', '').startswith('softprops/'))\n\
         assert 'manifest.json' in publish['with']['files'].splitlines()\nversion =\
         \ tomllib.loads(Path('Cargo.toml').read_text())['workspace']['package']['version']\n\
         with tempfile.TemporaryDirectory() as name:\n    root = Path(name)\n    dist\
