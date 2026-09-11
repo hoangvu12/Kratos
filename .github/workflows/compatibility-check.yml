@@ -1,0 +1,33 @@
+name: PR 313 compatibility check
+on:
+  push:
+    branches: [compatibility-check-313]
+permissions:
+  contents: read
+jobs:
+  native:
+    if: github.repository == 'hoangvu12/comet'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq -o Dir::Etc::sourcelist="sources.list.d/ubuntu.sources" -o Dir::Etc::sourceparts="-"
+          sudo apt-get install -y -qq libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libxcb1-dev libx11-xcb-dev libfontconfig1-dev libfreetype-dev libasound2-dev libvulkan-dev pkg-config cmake libwebkit2gtk-4.1-dev libjson-glib-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Shared runtime tests
+        run: cargo test --locked -p zeron-harness -p zeron-engine -p zeron-update --lib
+      - name: Check desktop and CLI
+        if: always() && !cancelled()
+        run: cargo check --locked -p zeron --all-targets
+      - name: UI regressions
+        if: always() && !cancelled()
+        run: cargo test --locked -p zeron-ui --lib -- --test-threads=1
