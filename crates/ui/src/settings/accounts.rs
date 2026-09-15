@@ -436,7 +436,6 @@ impl AccountsPage {
         let params = self.params(serde_json::json!({ "forceUsage": force_usage }));
         self.load_task = Some(cx.spawn(async move |this, cx| {
             let result = engine
-                .client()
                 .call(methods::LIST_AGENT_ACCOUNTS, params)
                 .await;
             this.update(cx, |page, cx| {
@@ -473,7 +472,7 @@ impl AccountsPage {
             "harness": account.harness,
         }));
         self.action_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(method, params).await;
+            let result = engine.call(method, params).await;
             this.update(cx, |page, cx| {
                 page.busy_account = None;
                 match result {
@@ -498,7 +497,6 @@ impl AccountsPage {
         let params = self.params(serde_json::json!({ "harness": harness }));
         self.action_task = Some(cx.spawn(async move |this, cx| {
             let result = engine
-                .client()
                 .call(methods::START_AGENT_LOGIN, params)
                 .await;
             this.update(cx, |page, cx| {
@@ -564,7 +562,6 @@ impl AccountsPage {
         let params = self.params(serde_json::json!({ "loginId": login_id, "code": code }));
         self.action_task = Some(cx.spawn(async move |this, cx| {
             let result = engine
-                .client()
                 .call(methods::COMPLETE_AGENT_LOGIN, params)
                 .await;
             this.update(cx, |page, cx| {
@@ -606,7 +603,6 @@ impl AccountsPage {
                     .timer(Duration::from_millis(1500))
                     .await;
                 let result = engine
-                    .client()
                     .call(methods::POLL_AGENT_LOGIN, params.clone())
                     .await;
                 let outcome = this.update(cx, |page, cx| {
@@ -672,7 +668,6 @@ impl AccountsPage {
             let params = self.params(serde_json::json!({ "loginId": login_id }));
             self.action_task = Some(cx.spawn(async move |_, _| {
                 if let Err(err) = engine
-                    .client()
                     .call(methods::CANCEL_AGENT_LOGIN, params)
                     .await
                 {

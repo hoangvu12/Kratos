@@ -253,7 +253,6 @@ impl BrowserSurface {
         self.previews_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 let subscription = handle
-                    .client()
                     .subscribe(
                         roboco_rpc::methods::WATCH_PREVIEWS,
                         serde_json::json!({"chatId": chat_id}),

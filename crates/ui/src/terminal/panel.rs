@@ -623,7 +623,6 @@ impl TerminalPanel {
                 .unwrap_or((80, 24));
 
             let opened = engine
-                .client()
                 .call_as::<TerminalSession>(
                     methods::OPEN_TERMINAL,
                     with_target(
@@ -664,7 +663,6 @@ impl TerminalPanel {
             if !attached {
                 // Tab was closed before the open completed — release the PTY.
                 let _ = engine
-                    .client()
                     .call(
                         methods::CLOSE_TERMINAL,
                         with_target(
@@ -686,7 +684,6 @@ impl TerminalPanel {
                 let Some(after_seq) = after_seq else { return }; // tab closed
 
                 let subscribed = engine
-                    .client()
                     .subscribe(
                         methods::SUBSCRIBE_TERMINAL,
                         with_target(
@@ -767,7 +764,6 @@ impl TerminalPanel {
                     let data = encode_base64(&responses);
                     cx.spawn(async move |_, _| {
                         let _ = engine
-                            .client()
                             .call(
                                 methods::WRITE_TERMINAL,
                                 with_target(
@@ -849,7 +845,6 @@ impl TerminalPanel {
         let data = encode_base64(&tab.coalescer.take());
         cx.spawn(async move |_, _| {
             let _ = engine
-                .client()
                 .call(
                     methods::WRITE_TERMINAL,
                     with_target(
@@ -953,7 +948,6 @@ impl TerminalPanel {
                 };
                 let Some(id) = stored_id.or(id) else { return };
                 let _ = engine
-                    .client()
                     .call(
                         methods::RESIZE_TERMINAL,
                         with_target(
@@ -1354,7 +1348,6 @@ impl TerminalPanel {
         if let (Some(engine), Some(id)) = (engine, tab.terminal_id.clone()) {
             cx.spawn(async move |_, _| {
                 let _ = engine
-                    .client()
                     .call(
                         methods::CLOSE_TERMINAL,
                         with_target(serde_json::json!({ "terminalId": id }), &target),

@@ -1776,7 +1776,6 @@ impl Changes {
                     );
                 }
                 let subscribed = engine
-                    .client()
                     .subscribe(
                         methods::WATCH_CHECKOUT_DIFFS,
                         serde_json::Value::Object(params),
@@ -1897,7 +1896,6 @@ impl Changes {
                 params.insert("targetDeviceId".into(), serde_json::Value::String(target));
             }
             let result = engine
-                .client()
                 .call(methods::LIST_BRANCHES, serde_json::Value::Object(params))
                 .await;
             this.update(cx, |changes, cx| {
@@ -2017,7 +2015,6 @@ impl Changes {
                 params.insert("targetDeviceId".into(), serde_json::Value::String(target));
             }
             let result = engine
-                .client()
                 .call(
                     methods::GET_CHECKOUT_DIFF,
                     serde_json::Value::Object(params),
@@ -3018,7 +3015,6 @@ impl Changes {
                     params.insert("targetDeviceId".into(), serde_json::Value::String(target));
                 }
                 let response = engine
-                    .client()
                     .call(
                         methods::GET_CHECKOUT_FILE_DIFF_TEXT,
                         serde_json::Value::Object(params),

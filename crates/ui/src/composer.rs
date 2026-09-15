@@ -5105,7 +5105,6 @@ impl Composer {
                 .timer(Duration::from_millis(80))
                 .await;
             let mut result = engine
-                .client()
                 .call(methods::SEARCH_FILES, params.clone())
                 .await;
             if matches!(result, Err(RpcError::Transport(_)) | Err(RpcError::Closed)) {
@@ -5115,7 +5114,7 @@ impl Composer {
                 cx.background_executor()
                     .timer(Duration::from_millis(250))
                     .await;
-                result = engine.client().call(methods::SEARCH_FILES, params).await;
+                result = engine.call(methods::SEARCH_FILES, params).await;
             }
             this.update(cx, |composer, cx| {
                 if !mention_response_is_current(&composer.mention, request) {
@@ -5402,7 +5401,7 @@ impl Composer {
             if let (Some(target), Some(object)) = (&target, params.as_object_mut()) {
                 object.insert("targetDeviceId".into(), target.clone().into());
             }
-            let result = engine.client().call(methods::LIST_COMMANDS, params).await;
+            let result = engine.call(methods::LIST_COMMANDS, params).await;
             this.update(cx, |composer, cx| {
                 if composer.slash.request != request {
                     return;
@@ -6566,7 +6565,6 @@ impl Composer {
                         "holdForTurnEnd": true,
                     });
                     let reply = engine
-                        .client()
                         .call(methods::QUEUE_MESSAGE, params)
                         .await
                         .map_err(|e| format!("Send failed: {e}"))?;
@@ -6724,7 +6722,7 @@ impl Composer {
         let task_chat_id = chat_id.clone();
         let failure_chat = chat_id.clone();
         let task = cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::QUEUE_COMMAND, params).await;
+            let result = engine.call(methods::QUEUE_COMMAND, params).await;
             if let Err(err) = result {
                 this.update(cx, |composer, cx| {
                     composer.interrupting.remove(&task_chat_id);
@@ -6830,7 +6828,7 @@ impl Composer {
         };
         // `action_task`, NOT `send_task` — see `interrupt`.
         self.action_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::QUEUE_COMMAND, params).await;
+            let result = engine.call(methods::QUEUE_COMMAND, params).await;
             if let Err(err) = result {
                 this.update(cx, |composer, cx| {
                     composer.failure = Some(format!("Answer failed: {err}").into());

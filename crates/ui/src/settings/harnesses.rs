@@ -149,7 +149,7 @@ impl HarnessesPage {
         self.load_titles(None, cx);
         self.harnesses = Loadable::Loading;
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::LIST_HARNESSES, params).await;
+            let result = engine.call(methods::LIST_HARNESSES, params).await;
             this.update(cx, |page, cx| {
                 page.harnesses = match result {
                     Ok(value) => match serde_json::from_value::<Vec<HarnessDescriptor>>(value) {
@@ -183,7 +183,6 @@ impl HarnessesPage {
         self.title_saving = saving;
         self.title_task = Some(cx.spawn(async move |this, cx| {
             let result = engine
-                .client()
                 .call(method, params)
                 .await
                 .map_err(|e| e.to_string())
@@ -221,7 +220,6 @@ impl HarnessesPage {
             .ok();
             if let Some(harness) = harness {
                 let result = engine
-                    .client()
                     .call(
                         methods::LIST_MODELS,
                         serde_json::json!({"harness": harness, "targetDeviceId": target}),
@@ -405,7 +403,6 @@ impl HarnessesPage {
         self.error = None;
         self.toggle_task = Some(cx.spawn(async move |this, cx| {
             let result = engine
-                .client()
                 .call(methods::SET_HARNESS_ENABLED, params)
                 .await;
             this.update(cx, |page, cx| {

@@ -236,9 +236,6 @@ impl EngineTarget {
     pub fn key(&self) -> &EngineKey {
         &self.key
     }
-    pub fn client(&self) -> &Self {
-        self
-    }
     pub fn engine_info(&self) -> EngineInfo {
         self.info.clone()
     }

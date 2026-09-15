@@ -53,7 +53,7 @@ impl ArchivedPage {
             "archived": false,
         });
         self.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::MUTATE, params).await;
+            let result = engine.call(methods::MUTATE, params).await;
             this.update(cx, |page, cx| {
                 page.busy = None;
                 if let Err(err) = result {

@@ -1137,7 +1137,6 @@ impl Composer {
         });
         cx.spawn(async move |this, cx| {
             let result = engine
-                .client()
                 .call(methods::REMOVE_QUEUED_MESSAGE, params)
                 .await;
             this.update(cx, |composer, cx| {
@@ -1292,7 +1291,6 @@ impl Composer {
         });
         let task = cx.spawn(async move |this, cx| {
             let result = engine
-                .client()
                 .call(methods::BEGIN_QUEUED_MESSAGE_EDIT, params)
                 .await;
             let mut loaded_attachments = Vec::new();
@@ -1325,7 +1323,7 @@ impl Composer {
                     }
                 }
                 if load_failed {
-                    let _ = engine.client().call(methods::FINISH_QUEUED_MESSAGE_EDIT, serde_json::json!({
+                    let _ = engine.call(methods::FINISH_QUEUED_MESSAGE_EDIT, serde_json::json!({
                         "chatId": chat_id, "id": id, "leaseId": reply.get("leaseId"),
                         "action": "cancel", "targetDeviceId": host_device_id,
                     })).await;
@@ -1382,7 +1380,6 @@ impl Composer {
                             let engine = engine.clone();
                             cx.spawn(async move |_, _| {
                                 let _ = engine
-                                    .client()
                                     .call(methods::FINISH_QUEUED_MESSAGE_EDIT, params)
                                     .await;
                             })
@@ -1609,7 +1606,6 @@ impl Composer {
                     "targetDeviceId": host_device_id,
                 });
                 match engine
-                    .client()
                     .call(methods::RENEW_QUEUED_MESSAGE_EDIT, params)
                     .await
                 {
@@ -1655,7 +1651,6 @@ impl Composer {
         });
         cx.spawn(async move |_, _| {
             let _ = engine
-                .client()
                 .call(methods::FINISH_QUEUED_MESSAGE_EDIT, params)
                 .await;
         })
@@ -1722,7 +1717,7 @@ impl Composer {
         // so cancelled — the move still in flight, leaving the optimistic list
         // showing an order the doc never got.
         cx.spawn(
-            async move |this, cx| match engine.client().call(method, params).await {
+            async move |this, cx| match engine.call(method, params).await {
                 Ok(reply) if queue_mutation_acknowledged(method, &reply) => {
                     // The host has adopted this message. Clear even if the
                     // user switched chats and its transcript is no longer watched.

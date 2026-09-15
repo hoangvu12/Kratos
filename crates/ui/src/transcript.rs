@@ -5221,7 +5221,6 @@ impl Transcript {
             cx.spawn(async move |_, _| {
                 let params = serde_json::json!({ "chatId": chat_id });
                 if let Err(err) = engine
-                    .client()
                     .call(roboco_rpc::methods::RETRY_DELIVERY, params)
                     .await
                 {

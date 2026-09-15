@@ -3570,7 +3570,7 @@ impl Shell {
             return;
         };
         self.mutate_task = Some(cx.spawn(async move |this, cx| {
-            if let Err(err) = engine.client().call(methods::MUTATE, params).await {
+            if let Err(err) = engine.call(methods::MUTATE, params).await {
                 this.update(cx, |shell, cx| {
                     shell.sidebar_notice = Some(format!("{err}").into());
                     cx.notify();

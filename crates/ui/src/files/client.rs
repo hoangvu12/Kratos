@@ -98,7 +98,7 @@ struct EngineFilesTransport(EngineTarget);
 #[async_trait]
 impl WorkspaceFilesTransport for EngineFilesTransport {
     async fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
-        self.0.client().call(method, params).await
+        self.0.call(method, params).await
     }
 
     async fn subscribe(
@@ -106,7 +106,7 @@ impl WorkspaceFilesTransport for EngineFilesTransport {
         method: &str,
         params: Value,
     ) -> Result<mpsc::Receiver<Value>, RpcError> {
-        self.0.client().subscribe(method, params).await
+        self.0.subscribe(method, params).await
     }
 }
 

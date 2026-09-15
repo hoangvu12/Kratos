@@ -302,7 +302,7 @@ pub(crate) async fn call_with_timeout(
     params: serde_json::Value,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    let call = engine.client().call(method, params);
+    let call = engine.call(method, params);
     let timer = executor.timer(timeout);
     futures::pin_mut!(call);
     match futures::future::select(call, timer).await {

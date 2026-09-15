@@ -1853,7 +1853,7 @@ impl AppState {
         let chat_id = chat_id.to_string();
         cx.spawn(async move |_, _| {
             let params = serde_json::json!({ "op": "markChatSeen", "chatId": chat_id });
-            if let Err(err) = handle.client().call(methods::MUTATE, params).await {
+            if let Err(err) = handle.call(methods::MUTATE, params).await {
                 tracing::warn!(chat = %chat_id, error = %err, "markChatSeen failed");
             }
         })
@@ -1990,7 +1990,6 @@ fn spawn_change_request_watch(
             let params = watch_params(&target, local_device_id.as_deref());
 
             let mut subscription = match handle
-                .client()
                 .subscribe_checked(methods::WATCH_CHECKOUT_CHANGE_REQUEST, params)
                 .await
             {
@@ -2208,7 +2207,6 @@ fn spawn_transcript_watch(
         'resubscribe: loop {
             let params = serde_json::json!({ "chatId": chat_id });
             let mut rx = match handle
-                .client()
                 .subscribe_checked(methods::WATCH_DOC_MESSAGES, params)
                 .await
             {
@@ -2331,7 +2329,6 @@ fn spawn_queue_watch(
         'resubscribe: loop {
             let params = serde_json::json!({ "chatId": chat_id });
             let mut rx = match handle
-                .client()
                 .subscribe_checked(methods::WATCH_QUEUE, params)
                 .await
             {
@@ -2385,7 +2382,6 @@ fn spawn_subagent_watch(
         'resubscribe: loop {
             let params = serde_json::json!({ "chatId": doc_id });
             let mut rx = match handle
-                .client()
                 .subscribe_checked(methods::WATCH_DOC_MESSAGES, params)
                 .await
             {

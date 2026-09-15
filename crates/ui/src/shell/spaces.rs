@@ -1968,7 +1968,6 @@ impl Shell {
                 );
             }
             let result = engine
-                .client()
                 .call(methods::LIST_DRIVES, serde_json::Value::Object(params))
                 .await;
             this.update(cx, |shell, cx| {
@@ -2205,7 +2204,6 @@ impl Shell {
                 );
             }
             let result = engine
-                .client()
                 .call(methods::LIST_FOLDERS, serde_json::Value::Object(params))
                 .await;
             this.update(cx, |shell, cx| {
@@ -2266,7 +2264,7 @@ impl Shell {
         flow.submit_busy = submit;
         flow.error = None;
         flow.manual_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::PREPARE_SPACE_PATH,
+            let result = engine.call(methods::PREPARE_SPACE_PATH,
                 serde_json::json!({"path":path,"createIfMissing":create,"targetDeviceId":device_id})).await
                 .map_err(|error| error.to_string())
                 .and_then(|value| serde_json::from_value::<roboco_engine::space_paths::SpacePath>(value).map_err(|error| error.to_string()));
@@ -2386,7 +2384,7 @@ impl Shell {
         });
         let submit_id = space_id.clone();
         let task = cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::MUTATE, params).await;
+            let result = engine.call(methods::MUTATE, params).await;
             this.update(cx, |shell, cx| {
                 match result {
                     Ok(_) => {

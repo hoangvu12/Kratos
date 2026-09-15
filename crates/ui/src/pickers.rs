@@ -1060,7 +1060,6 @@ impl Pickers {
                 );
             }
             let result = engine
-                .client()
                 .call(methods::LIST_HARNESSES, serde_json::Value::Object(params))
                 .await;
             if let Some(delay) = slow_catalog_delay() {
@@ -1143,7 +1142,6 @@ impl Pickers {
             let mut attempt = 1_u64;
             let result = loop {
                 let result = engine
-                    .client()
                     .call(methods::LIST_MODELS, params.clone())
                     .await;
                 if result.is_ok() || harness != HarnessId::Opencode || attempt >= 3 {
@@ -1254,7 +1252,6 @@ impl Pickers {
                 );
             }
             let result = engine
-                .client()
                 .call(methods::LIST_REFS, serde_json::Value::Object(params))
                 .await;
             this.update(cx, |pickers, cx| {
@@ -1340,7 +1337,6 @@ impl Pickers {
                 );
             }
             let result = engine
-                .client()
                 .call(methods::SWITCH_REF, serde_json::Value::Object(params))
                 .await;
             this.update(cx, |pickers, cx| {
@@ -1538,7 +1534,7 @@ impl Pickers {
                 "chatId": chat_id,
                 "config": config,
             });
-            if let Err(err) = engine.client().call(methods::MUTATE, params).await {
+            if let Err(err) = engine.call(methods::MUTATE, params).await {
                 tracing::warn!(error = %err, "setChatConfig mutate failed");
             }
         }));
