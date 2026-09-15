@@ -1775,8 +1775,12 @@ impl AppState {
         if let Some(chat_id) = chat_id
             && let Ok(handle) = self.target_for_id(&chat_id)
         {
-            self.transcript_task =
-                Some(spawn_transcript_watch(cx, handle.clone(), chat_id.clone()));
+            self.transcript_task = Some(spawn_transcript_watch(
+                cx,
+                handle.clone(),
+                chat_id.clone(),
+                self.data_dir.clone(),
+            ));
             if handle
                 .engine_info()
                 .supports(roboco_proto::capabilities::MESSAGE_QUEUE_V1)
@@ -1946,8 +1950,12 @@ fn spawn_registry_watch(
                         && let Some(id) = state.selected_chat.clone()
                         && let Ok(target) = state.target_for_id(&id)
                     {
-                        state.transcript_task =
-                            Some(spawn_transcript_watch(cx, target.clone(), id.clone()));
+                        state.transcript_task = Some(spawn_transcript_watch(
+                            cx,
+                            target.clone(),
+                            id.clone(),
+                            state.data_dir.clone(),
+                        ));
                         if target
                             .engine_info()
                             .supports(roboco_proto::capabilities::MESSAGE_QUEUE_V1)
@@ -2155,11 +2163,11 @@ fn spawn_transcript_watch(
     cx: &mut Context<AppState>,
     handle: EngineTarget,
     chat_id: String,
+    data_dir: Option<PathBuf>,
 ) -> Task<()> {
-    let cache = cx
-        .entity()
-        .read(cx)
-        .data_dir
+    // NB: `data_dir` arrives by value — reading the entity here (`cx.entity()`)
+    // would double-lease it, since every caller runs inside an AppState update.
+    let cache = data_dir
         .as_deref()
         .map(crate::engine_cache::EngineCache::new);
     let engine_key = handle.key().0.clone();
