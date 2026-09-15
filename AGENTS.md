@@ -54,9 +54,16 @@ Still zeron-branded on purpose:
 - `zeronsh` org references and PR/issue links
 - `zeron.sh` / `edge.zeron.sh` URLs — the app syncs via zeron's public edge; we don't run our own
 - `apps/ios/`, `apps/landing/`, `apps/www-redirect/`, `edge/` — upstream's deployable infra
-- `.github/workflows/deploy.yml`, `release.yml`, `testflight.yml` — deploy to zeron.sh infra, never run them from here
 - `docs/research/` — historical research notes
 - `ZERON_GPU_STATS` — env var owned by the zui fork, not this repo
+
+## CI (Windows + Linux only)
+
+- `windows.yml` — Windows tests (PR + push)
+- `ui-tests.yml` — ubuntu jobs only (session sync, UI regressions, linux browser)
+- `preview-tests.yml` — ubuntu (preview/proto tests)
+- `release.yml` — tag `v*`: linux x86_64+aarch64 tarballs + windows portable zip → GitHub Release with `manifest.json` (updater checksums). No macOS/iOS/R2.
+- Deleted on purpose: `deploy.yml` (zeron.sh infra), `testflight.yml` (iOS). Expect these to reappear on upstream merges — delete them again in the merge commit.
 
 ## Naming conventions
 
