@@ -92,18 +92,28 @@ async fn pairing_is_atomic_persistent_revocable_and_hashed() {
     }
     let before = cli_store.list_sessions().unwrap()[0].last_seen;
     tokio::time::sleep(Duration::from_millis(10)).await;
-    let info: Value = client
-        .get(format!("{base}/pairing/session"))
-        .bearer_auth(token)
-        .send()
-        .await
-        .unwrap()
-        .json()
+    // A minted session authenticates over the paired WebSocket boundary, which
+    // also touches its last_seen; the label round-trips through the store.
+    let remote = roboco_engine::serve_engine_remote(
+        "127.0.0.1:0".parse().unwrap(),
+        core.rpc_service(),
+        dir.path(),
+    )
+    .await
+    .unwrap();
+    let remote_url = format!("ws://{}", remote.address);
+    let session = roboco_rpc::connect_ws_authenticated(&remote_url, token)
         .await
         .unwrap();
-    assert_eq!(info["label"], "Laptop");
-    assert!(info["lastSeen"].as_i64().unwrap() > before);
-    assert!(info.get("credential").is_none());
+    let info = session
+        .call(roboco_rpc::methods::ENGINE_INFO, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(info["deviceId"], core.device_id);
+    let stored = cli_store.list_sessions().unwrap();
+    assert_eq!(stored[0].label, "Laptop");
+    assert!(stored[0].last_seen > before);
+    drop(session);
     // Native local WebSocket RPC remains credential free on the same port.
     let rpc = roboco_rpc::connect_ws(&base.replacen("http", "ws", 1))
         .await
@@ -115,31 +125,31 @@ async fn pairing_is_atomic_persistent_revocable_and_hashed() {
     assert!(result.is_array());
     drop(rpc);
     server.abort();
+    drop(remote);
     core.shutdown().await;
     drop(core);
-    let (core, base, server) = engine(dir.path()).await;
-    assert_eq!(
-        client
-            .get(format!("{base}/pairing/session"))
-            .bearer_auth(token)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        200
-    );
+    let (core, _, server) = engine(dir.path()).await;
+    let remote = roboco_engine::serve_engine_remote(
+        "127.0.0.1:0".parse().unwrap(),
+        core.rpc_service(),
+        dir.path(),
+    )
+    .await
+    .unwrap();
+    let remote_url = format!("ws://{}", remote.address);
+    // The session survives an engine restart.
+    roboco_rpc::connect_ws_authenticated(&remote_url, token)
+        .await
+        .unwrap();
+    // Revocation refuses its next connection.
     assert!(PairingStore::open(dir.path()).unwrap().revoke(id).unwrap());
-    assert_eq!(
-        client
-            .get(format!("{base}/pairing/session"))
-            .bearer_auth(token)
-            .send()
+    assert!(
+        roboco_rpc::connect_ws_authenticated(&remote_url, token)
             .await
-            .unwrap()
-            .status(),
-        401
+            .is_err()
     );
     server.abort();
+    drop(remote);
     core.shutdown().await;
 }
 

@@ -1,5 +1,5 @@
 //! The actual CLI can mutate pairing rows while an engine owns its instance lock.
-use roboco_engine::{EngineCore, EngineProfile, HarnessId, HarnessRegistry, pairing::PairingStore};
+use roboco_engine::{EngineCore, EngineProfile, HarnessId, HarnessRegistry};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -27,13 +27,14 @@ async fn second_process_mints_lists_and_revokes_against_running_engine() {
         HarnessId::Mock,
     )
     .unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(roboco_engine::listener::serve_listener(
-        listener,
+    let mut remote = roboco_engine::serve_engine_remote(
+        "127.0.0.1:0".parse().unwrap(),
         core.rpc_service(),
-        PairingStore::open(dir.path()).unwrap(),
-    ));
+        dir.path(),
+    )
+    .await
+    .unwrap();
+    let base = format!("http://{}", remote.address);
     let created: Value = serde_json::from_slice(
         &cli(
             dir.path(),
@@ -69,16 +70,21 @@ async fn second_process_mints_lists_and_revokes_against_running_engine() {
     assert_eq!(rows[0]["label"], "Desktop");
     let listed = String::from_utf8(listed.stdout).unwrap();
     assert!(!listed.contains(code) && !listed.contains(credential));
+    // A minted session authenticates over the paired WebSocket boundary.
+    let ws = base.replacen("http", "ws", 1);
+    let rpc = roboco_rpc::connect_ws_authenticated(&ws, credential)
+        .await
+        .unwrap();
+    rpc.call(roboco_rpc::methods::ENGINE_INFO, json!({}))
+        .await
+        .unwrap();
+    drop(rpc);
     cli(dir.path(), &["revoke", id]);
-    assert_eq!(
-        http.get(format!("{base}/pairing/session"))
-            .bearer_auth(credential)
-            .send()
+    assert!(
+        roboco_rpc::connect_ws_authenticated(&ws, credential)
             .await
-            .unwrap()
-            .status(),
-        401
+            .is_err()
     );
-    server.abort();
+    remote.stop().await;
     core.shutdown().await;
 }

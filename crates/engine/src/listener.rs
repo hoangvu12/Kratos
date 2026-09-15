@@ -142,17 +142,6 @@ async fn handle(
             }
         }
     }
-    if path == "/pairing/session" && request.method() == hyper::Method::GET {
-        let Some(token) = bearer(&request).map(str::to_owned) else {
-            return Ok(reply(StatusCode::UNAUTHORIZED, "invalid credential"));
-        };
-        let result = tokio::task::spawn_blocking(move || pairing.authenticate(&token)).await;
-        return Ok(match result {
-            Ok(Ok(Some(session))) => json(StatusCode::OK, &session),
-            Ok(Ok(None)) => reply(StatusCode::UNAUTHORIZED, "invalid credential"),
-            _ => reply(StatusCode::INTERNAL_SERVER_ERROR, "session check failed"),
-        });
-    }
     if path == "/health" && request.method() == hyper::Method::GET {
         return Ok(json(StatusCode::OK, &serde_json::json!({"status":"ok"})));
     }
