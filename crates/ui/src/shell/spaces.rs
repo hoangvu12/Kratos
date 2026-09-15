@@ -226,6 +226,23 @@ pub(super) struct AddSpaceFlow {
     _search_events: Subscription,
 }
 
+impl AddSpaceFlow {
+    /// Stale-response guard for the flow's async tasks: a response is dropped
+    /// once the flow was reset (identity), the browse advanced past the
+    /// request (revision), or the device changed underneath it. Loads that
+    /// key off the browser path instead of the revision pass `None`.
+    fn is_stale(
+        &self,
+        identity: uuid::Uuid,
+        revision: Option<u64>,
+        device_id: Option<&String>,
+    ) -> bool {
+        self.identity != identity
+            || revision.is_some_and(|revision| self.revision != revision)
+            || self.device.as_ref().map(|d| &d.id) != device_id
+    }
+}
+
 /// One row of the rail's Locations section: home, or a mounted drive
 /// (by index into the flow's loaded drive list).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1972,9 +1989,7 @@ impl Shell {
                 .await;
             this.update(cx, |shell, cx| {
                 if let Some(flow) = shell.add_space.as_mut() {
-                    if flow.identity != identity
-                        || flow.device.as_ref().map(|d| &d.id) != device_id.as_ref()
-                    {
+                    if flow.is_stale(identity, None, device_id.as_ref()) {
                         return;
                     }
                     flow.drives = match result {
@@ -2208,8 +2223,7 @@ impl Shell {
                 .await;
             this.update(cx, |shell, cx| {
                 if let Some(flow) = shell.add_space.as_mut() {
-                    if flow.identity != identity
-                        || flow.device.as_ref().map(|d| &d.id) != device_id.as_ref()
+                    if flow.is_stale(identity, None, device_id.as_ref())
                         || flow.browser_path != path
                         || flow.hidden_query != hidden_query
                         || manual_path_query(flow.search.read(cx).text().as_ref())
@@ -2270,7 +2284,7 @@ impl Shell {
                 .and_then(|value| serde_json::from_value::<roboco_engine::space_paths::SpacePath>(value).map_err(|error| error.to_string()));
             this.update(cx, |shell, cx| {
                 let Some(flow) = shell.add_space.as_mut() else { return; };
-                if flow.identity != identity || flow.revision != revision || flow.device.as_ref().map(|d| &d.id) != Some(&device_id) { return; }
+                if flow.is_stale(identity, Some(revision), Some(&device_id)) { return; }
                 flow.submit_busy = false;
                 let add = match result {
                     Ok(path) => {
