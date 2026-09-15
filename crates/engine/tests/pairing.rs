@@ -34,6 +34,16 @@ async fn redeem(client: &reqwest::Client, base: &str, credential: &str) -> reqwe
         .unwrap()
 }
 
+#[test]
+fn pairing_url_refuses_a_path_prefixed_base() {
+    // The listener serves its routes at the root only, so minting a link under
+    // a tunnel path prefix would produce URLs the engine can never serve.
+    assert!(pairing_url("https://tunnel.example/roboco", "credential").is_err());
+    assert!(pairing_url("https://tunnel.example/roboco/", "credential").is_err());
+    assert!(pairing_url("https://tunnel.example", "credential").is_ok());
+    assert!(pairing_url("https://tunnel.example/", "credential").is_ok());
+}
+
 #[tokio::test]
 async fn pairing_is_atomic_persistent_revocable_and_hashed() {
     let dir = tempfile::tempdir().unwrap();

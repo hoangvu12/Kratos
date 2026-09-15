@@ -22,6 +22,10 @@ You can choose a bind or advertise an operator-managed tunnel:
 roboco headless --network --network-address 0.0.0.0:27655 --pairing-base-url https://my-engine.example
 ```
 
+A base URL must be the server root: tunnel URLs carrying a path prefix (for
+example `https://host.example/roboco`) are refused, because the engine serves
+pairing, health, and WebSocket routes at the listener root.
+
 `ROBOCO_NETWORK=true` is the headless environment equivalent. Accepted values are
 `true`, `false`, `1`, and `0`. The desktop reads its saved settings. Startup flags
 do not rewrite the Settings file.

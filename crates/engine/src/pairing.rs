@@ -214,8 +214,13 @@ pub fn pairing_url(base_url: &str, credential: &str) -> anyhow::Result<String> {
             && url.fragment().is_none(),
         "base URL must be HTTP or HTTPS without credentials, query, or fragment"
     );
-    let path = format!("{}/pair", url.path().trim_end_matches('/'));
-    url.set_path(&path);
+    // The listener exact-matches its routes at the root, so a tunnel base URL
+    // carrying a path prefix would mint links the engine can never serve.
+    anyhow::ensure!(
+        matches!(url.path(), "" | "/"),
+        "base URL must not carry a path prefix"
+    );
+    url.set_path("/pair");
     url.set_fragment(Some(&format!("token={credential}")));
     Ok(url.to_string())
 }

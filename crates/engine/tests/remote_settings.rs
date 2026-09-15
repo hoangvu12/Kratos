@@ -127,6 +127,17 @@ async fn settings_toggle_pairing_and_revocation_control_live_listener() {
     core.shutdown().await;
 }
 
+#[test]
+fn path_prefixed_public_url_is_refused_at_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = RemoteAccessSettings {
+        public_url: Some("https://tunnel.example/roboco".into()),
+        ..Default::default()
+    };
+    assert!(roboco_engine::remote_access::save(dir.path(), &settings).is_err());
+    assert!(!dir.path().join("remote-access.json").exists());
+}
+
 #[tokio::test]
 async fn conflicting_and_malformed_configuration_stays_local() {
     for invalid_file in [false, true] {
