@@ -2646,8 +2646,8 @@ mod tests {
     async fn bootstrap_connects_when_daemon_is_listening() {
         // Stand in for `roboco headless`: an engine served over the WS IPC port.
         let daemon_dir = tempfile::tempdir().unwrap();
-        let core = EngineCore::assemble(
-            daemon_dir.path(),
+        let core = EngineCore::assemble_with_profile(
+            roboco_engine::EngineProfile::local(daemon_dir.path()).unwrap(),
             Arc::new(default_registry()),
             HarnessId::Mock,
         )

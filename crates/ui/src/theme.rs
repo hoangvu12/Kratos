@@ -1945,7 +1945,7 @@ mod tests {
                 frosted.window_background_appearance(),
                 gpui::WindowBackgroundAppearance::Blurred
             );
-            assert!(!frosted.is_frost());
+            assert!(frosted.is_frost());
         }
 
         let opaque_roboco = Theme::for_selection(
@@ -2549,14 +2549,13 @@ mod tests {
                 light.glass().a > dark.glass().a - f32::EPSILON,
                 "a light tint dominates the blur less, so it must not run looser than dark"
             );
-            if cfg!(target_os = "macos") {
+            if cfg!(any(target_os = "macos", target_os = "linux", target_os = "windows")) {
                 assert!(
                     light.glass_overlay().a > dark.glass_overlay().a,
                     "light floating cards need more coverage over blur for legible rows"
                 );
             } else {
-                // Windows has native Acrylic window glass, but the DirectX
-                // renderer does not yet rasterize in-app BackdropBlur regions.
+                // Unsupported platforms use opaque in-app surfaces.
                 assert_eq!(dark.glass_overlay().a, 1.0);
                 assert_eq!(light.glass_overlay().a, 1.0);
                 assert!(!dark.is_frost());
