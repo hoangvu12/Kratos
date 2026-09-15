@@ -4,16 +4,16 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-**Implementation:** merged; integrated headless UI validation pending.
+**Implementation:** merged; integrated headless UI validation completed on the PR branch.
 
 **Parent:** `.scratch/remote-access/spec.md`
 
 - [x] Room/relay sync clients and their integration tests are deleted; local loro doc storage stays
-- [ ] Sidebar, spaces, and device vocabulary render correctly from local-engine data alone
-- [ ] No sign-in or cloud path is required for any local behavior
-- [ ] Headless UI layout regression suite stays green
+- [x] Sidebar, spaces, and device vocabulary render correctly from local-engine data alone
+- [x] No sign-in or cloud path is required for any local behavior
+- [x] Headless UI layout regression suite stays green
 
 
 ## Comments

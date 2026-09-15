@@ -4,13 +4,13 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Parent:** `.scratch/remote-access/spec.md`
 
 - [x] Edge worker directory, iOS app directory, and their workflows are gone
 - [x] No Rust/TS reference to the deleted trees remains in build or CI config
-- [ ] `cargo check --workspace` and the remaining CI workflows pass
+- [x] `cargo check --workspace` and the remaining CI workflows pass
 
 ## Implementation
 
@@ -20,4 +20,9 @@ the deleted installer. Deployment and TestFlight workflows were already absent.
 
 Validation: `cargo check --workspace --locked`, `cargo check --locked -p roboco --tests`,
 and `git diff --check` pass on Windows. Build/CI/script configuration contains no
-references to the deleted directories. Hosted Windows/Linux CI remains to be run.
+references to the deleted directories.
+
+Integrated validation on the PR branch (2026-09-15):
+`cargo check --workspace --all-targets --locked` passes on Windows, and the
+`Preview networking`, `UI tests`, and `Windows tests` workflows run green on the
+pull request.

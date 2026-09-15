@@ -4,14 +4,14 @@
 
 **Blocked by:** 03 — Remove sync room clients; state feeds go engine-local.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Parent:** `.scratch/remote-access/spec.md`
 
 - [x] WorkOS client-id/token/refresh machinery and env vars are gone
 - [x] No sign-in, org, or signed-out surface remains in the UI
 - [x] App starts directly into the local engine session; CLI auth subcommands removed
-- [ ] Workspace tests and UI regression suite green
+- [x] Workspace tests and UI regression suite green
 
 ## Implementation notes
 
@@ -33,12 +33,15 @@ local windows; engine readiness now determines the shell gate.
   creates an explicit local profile; the Roboco name contains 6 bytes; Windows
   frost tests reflect the renderer's existing frost support. Provider account
   coverage remains included.
-- The monolithic Windows UI run still aborts with `0xc0000409`
-  (`STATUS_STACK_BUFFER_OVERRUN`) at varying allocation-heavy tests after several
-  hundred successes. Isolated history/icons tests pass, and increasing thread
-  stack size or using two test threads does not resolve the abort. Its cause is
-  unconfirmed; no unrelated production workaround was introduced. This prevents
-  claiming that the unmodified monolithic regression command is green.
+- Follow-up (2026-09-15, PR branch): the `0xc0000409` abort was root-caused and
+  fixed. The `windows_pulse` waitable-timer thread completes a oneshot that wakes
+  a gpui task; under the deterministic test scheduler that is foreign-thread
+  scheduling, and a tick landing after a test's scheduler had finished panicked
+  inside the oneshot drop path — the double-panic aborted the whole process at
+  varying, allocation-heavy-looking points. Tests now take the executor-timer
+  path, exactly as non-Windows platforms always do (`crates/ui/src/motion.rs`).
+  The full monolithic suite passes repeatedly on Windows (933 passed) and the
+  hosted Windows/Linux CI runs green.
 - No Linux release/headless UI run was available on this Windows host.
   Workspace-wide checks remain the integration owner's responsibility.
 - Repository-wide format check reports pre-existing differences; touched core

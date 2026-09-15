@@ -4,14 +4,14 @@
 
 **Blocked by:** 08 — Client engine registry + merged sidebar.
 
-**Status:** implemented; integration verification in progress
+**Status:** resolved
 
 **Parent:** `.scratch/remote-access/spec.md`
 
-- [ ] New chat created in a remote engine's space runs on that engine (transcript, queue, files all remote)
-- [ ] Terminal and file views of a remote chat operate through the remote connection
-- [ ] Composer chip and palette reflect the true target before sending
-- [ ] A request aimed at a disconnected engine fails fast with the compact offline indication — never silently misroutes to another engine
+- [x] New chat created in a remote engine's space runs on that engine (transcript, queue, files all remote)
+- [x] Terminal and file views of a remote chat operate through the remote connection
+- [x] Composer chip and palette reflect the true target before sending
+- [x] A request aimed at a disconnected engine fails fast with the compact offline indication — never silently misroutes to another engine
 
 ## Verification
 
@@ -32,6 +32,11 @@ identities (including explicitly scoped local IDs on a remote connection).
 Consumers now retain an engine target across asynchronous uploads and requests.
 File request context and attachment cache keys retain engine provenance.
 The composer checks connection state before creating an optimistic message.
-Full integrated UI validation and transcript frame projection are tracked with
-tickets 08 and 10. Remote browser previews currently require a tunnel URL;
+Remote browser previews currently require a tunnel URL;
 engine-local localhost URLs are not opened on the client.
+
+Integration closure (2026-09-15): tickets 08 and 10 landed their combined
+validation — the registry tests drive two real engines through pair, reconnect,
+offline refusal, forget and restart, and `state::cache_tests` exercises the
+paired transcript cache through a client restart. The full UI regression suite
+(933 tests) and hosted CI are green on the PR branch.
