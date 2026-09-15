@@ -8,14 +8,17 @@ Control your coding agents (Claude Code, Codex, Cursor, Devin, Grok, Hermes, Pi)
 
 Every device runs a small engine that stores sessions on that device. A new installation starts in local-only mode without an account or a network connection.
 
-## Install and run locally (Linux)
+> **Roboco** is a hard fork of [zeronsh/zeron](https://github.com/zeronsh/zeron) (Zeron) with native Windows support. It tracks upstream and contributes back via PRs. Upstream's `zeron.sh` installer installs *Zeron* — for Roboco, build from source.
+
+## Build from source
 
 ```bash
-curl -fsSL https://zeron.sh/install.sh | sh
-roboco status
+git clone https://github.com/hoangvu12/roboco
+cd roboco
+cargo run -p roboco
 ```
 
-The installer starts the daemon immediately and keeps it running across reboots. No sign-in or sync configuration is required.
+Windows development notes: [docs/reference/windows-development.md](docs/reference/windows-development.md). The daemon keeps running across reboots once installed. No sign-in or sync configuration is required.
 
 The desktop sidebar browser also needs the [Linux browser runtime](docs/reference/linux-browser.md).
 
