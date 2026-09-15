@@ -122,6 +122,189 @@ mod tests {
     use crate::engine_registry::EngineKey;
     use serde_json::json;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_real_engines_keep_colliding_ids_and_uploads_separate() {
+        use crate::engine_registry::EngineRegistry;
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use roboco_engine::{EngineCore, EngineProfile, HarnessId, HarnessRegistry, pairing};
+        use roboco_rpc::methods;
+        use std::{sync::Arc, time::Duration};
+
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let mut cores = Vec::new();
+        for (dir, content) in [(&a, "local bytes"), (&b, "remote bytes")] {
+            let folder = dir.path().join("project");
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(folder.join("note.txt"), content).unwrap();
+            let core = EngineCore::assemble_with_profile(
+                EngineProfile::local(dir.path()).unwrap(),
+                Arc::new(HarnessRegistry::new()),
+                HarnessId::Mock,
+            )
+            .unwrap();
+            core.workspace
+                .create_space(
+                    "same-space",
+                    &core.device_id,
+                    &folder.to_string_lossy(),
+                    None,
+                    false,
+                )
+                .unwrap();
+            core.workspace
+                .create_chat("same-chat", Some("same-space"), None, None, None)
+                .unwrap();
+            cores.push(core);
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let local_server = tokio::spawn(roboco_rpc::serve_ws_listener(
+            listener,
+            cores[0].rpc_service(),
+        ));
+        let client = Arc::new(roboco_rpc::connect_ws(&url).await.unwrap());
+        let info = client
+            .call_as(methods::ENGINE_INFO, json!({}))
+            .await
+            .unwrap();
+        let registry = EngineRegistry::open(
+            a.path().join("client-engines.json"),
+            info,
+            client,
+            Some(url),
+        )
+        .await
+        .unwrap();
+        let remote = roboco_engine::serve_engine_remote(
+            "127.0.0.1:0".parse().unwrap(),
+            cores[1].rpc_service(),
+            b.path(),
+        )
+        .await
+        .unwrap();
+        let code = pairing::PairingStore::open(b.path())
+            .unwrap()
+            .create_code("routing test", 300)
+            .unwrap();
+        let pairing_url =
+            pairing::pairing_url(&format!("http://{}", remote.address), &code.credential).unwrap();
+        let key = registry.pair(&pairing_url, "Remote").await.unwrap();
+        let target = registry.target(&key).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !target.is_connected() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let chat = ScopedId::encode(&key, "same-chat");
+        for (owner, chat_id, expected) in [
+            (registry.local(), "same-chat".to_string(), "local bytes"),
+            (target.clone(), chat.clone(), "remote bytes"),
+        ] {
+            let read = owner
+                .call(
+                    methods::READ_WORKSPACE_FILE,
+                    json!({"chatId":chat_id,"path":"note.txt"}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(read["text"], expected);
+            owner
+                .call(
+                    methods::UPLOAD_CHUNK,
+                    json!({"uploadId":"same-upload","seq":0,"data":STANDARD.encode(expected)}),
+                )
+                .await
+                .unwrap();
+            let upload = owner
+                .call(
+                    methods::UPLOAD_COMMIT,
+                    json!({"uploadId":"same-upload","fileName":"note.txt"}),
+                )
+                .await
+                .unwrap();
+            let read = owner
+                .call(
+                    methods::READ_ATTACHMENT_CHUNK,
+                    json!({"path":upload["path"],"offset":0}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                STANDARD.decode(read["data"].as_str().unwrap()).unwrap(),
+                expected.as_bytes()
+            );
+        }
+        let mut transcript = target
+            .subscribe(methods::WATCH_DOC_MESSAGES, json!({"chatId":chat}))
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), transcript.recv())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let terminal = target
+            .call(
+                methods::OPEN_TERMINAL,
+                json!({"chatId":chat,"cols":80,"rows":24}),
+            )
+            .await
+            .unwrap();
+        target
+            .call(
+                methods::RESIZE_TERMINAL,
+                json!({"terminalId":terminal["id"],"cols":100,"rows":30}),
+            )
+            .await
+            .unwrap();
+        target.call(methods::WRITE_TERMINAL, json!({"terminalId":terminal["id"],"data":STANDARD.encode("echo routing-test\r\n")})).await.unwrap();
+        target
+            .call(
+                methods::CLOSE_TERMINAL,
+                json!({"terminalId":terminal["id"]}),
+            )
+            .await
+            .unwrap();
+        drop(remote);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while target.is_connected() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(250),
+                target.call(
+                    methods::READ_WORKSPACE_FILE,
+                    json!({"chatId":chat,"path":"note.txt"})
+                )
+            )
+            .await
+            .unwrap()
+            .is_err()
+        );
+        let local = registry
+            .local()
+            .call(
+                methods::READ_WORKSPACE_FILE,
+                json!({"chatId":"same-chat","path":"note.txt"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(local["text"], "local bytes");
+        registry.shutdown().await;
+        local_server.abort();
+        for core in cores {
+            core.shutdown().await;
+        }
+    }
+
     #[test]
     fn wire_boundary_decodes_only_request_identity() {
         let owner = EngineKey("engine-b".into());
