@@ -1,6 +1,6 @@
 # Roboco — fork workflow
 
-Roboco (repo/project/binary: `roboco`, app display name: `Roboco`) is a hard fork of [zeronsh/zeron](https://github.com/zeronsh/zeron) with native Windows support. `main` = upstream zeron `main` + the [Windows native support PR line](https://github.com/zeronsh/zeron/pull/313). The wasimysaid Kratos line (Mimir ACP etc.) is intentionally **not** merged here; it lives in `../Kratos`.
+Roboco (repo/project/binary: `roboco`, app display name: `Roboco`) is an independent product derived from [zeronsh/zeron](https://github.com/zeronsh/zeron), with native Windows support. [ADR 0003](docs/adr/0003-product-not-fork.md) governs selected upstream ports; [ADR 0004](docs/adr/0004-engine-local-data.md) keeps data engine-local. The wasimysaid Kratos line lives separately in `../Kratos`.
 
 ## Remotes
 
@@ -9,19 +9,20 @@ Roboco (repo/project/binary: `roboco`, app display name: `Roboco`) is a hard for
 - `kratos` → local `../Kratos` checkout (reference only)
 - `rerere` is enabled — keep it that way; rebrand conflicts repeat and get auto-resolved.
 
-## Pulling from zeron
+## Porting from zeron
 
-```bash
-git fetch upstream
-git merge upstream/main
-```
+`zeron/main` is the pristine, un-renamed mirror of `upstream/main`. Keep it content-identical to upstream; use temporary branches for cherry-picks. Never merge upstream or the mirror into Roboco `main`.
 
-Expect conflicts wherever upstream touches what we renamed. Resolution rule: take upstream's content, then re-apply the rename mapping:
+Before refreshing the mirror or porting a commit, follow [the upstream port workflow](docs/reference/upstream-ports.md). Review the selected upstream change on a mirror-derived branch, then carry its intent into a Roboco branch by hand across the rebrand and removed cloud code. Keep `rerere` enabled.
 
-- `zeron-*` crates / `zeron_*` libs → `roboco-*` / `roboco_*`
-- `apps/zeron/` → `apps/roboco/`
-- `ZERON_*` env vars → `ROBOCO_*`
-- `sh.zeron.*` bundle ids → `sh.roboco.*`, `zeron://` links → `roboco://`
+Rename mapping for retained code:
+
+- `zeron-*` crates / `zeron_*` libs ? `roboco-*` / `roboco_*`
+- `apps/zeron/` ? `apps/roboco/`
+- `ZERON_*` env vars ? `ROBOCO_*`
+- `sh.zeron.*` bundle ids ? `sh.roboco.*`, `zeron://` links ? `roboco://`
+
+Preserve the engine-local pairing architecture; upstream ports must not restore edge, WorkOS, sync rooms, or iOS.
 
 ## PRing to zeron
 
