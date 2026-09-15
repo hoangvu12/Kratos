@@ -2650,7 +2650,6 @@ mod tests {
             daemon_dir.path(),
             Arc::new(default_registry()),
             HarnessId::Mock,
-            None,
         )
         .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

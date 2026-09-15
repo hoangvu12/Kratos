@@ -111,7 +111,6 @@ fn main() -> anyhow::Result<()> {
             &temp.path().join("engine"),
             Arc::new(roboco_engine::default_registry()),
             roboco_proto::HarnessId::ClaudeCode,
-            None,
         )
     })?;
     core.workspace.create_space(
