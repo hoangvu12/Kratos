@@ -249,6 +249,10 @@ mod manual_path_interactions {
 
     #[gpui::test]
     fn manual_remote_path_enter_and_create_use_selected_engine(cx: &mut TestAppContext) {
+        // Real engine over a real socket: RPC completions wake gpui tasks from
+        // tokio workers, so this test intentionally mixes I/O with the
+        // deterministic scheduler (the sanctioned `allow_parking` escape).
+        cx.executor().allow_parking();
         let local_dir = tempfile::tempdir().unwrap();
         let remote_dir = tempfile::tempdir().unwrap();
         let projects = tempfile::tempdir().unwrap();
@@ -684,28 +688,6 @@ impl Shell {
             cx.new(|cx| ComposerInput::with_context("Search projects…", "PaletteSearch", cx));
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
-                let Some(flow) = this.add_space.as_mut() else {
-                    return;
-                };
-                if flow.manual_task.is_some() && flow.submit_task.is_none() {
-                    flow.submit_busy = false;
-                }
-                flow.revision += 1;
-                flow.manual = None;
-                flow.manual_task = None;
-                flow.error = None;
-                let text = flow.search.read(cx).text().to_string();
-                if manual_path_query(&text) {
-                    this.prepare_manual_space(false, false, cx);
-                    return;
-                }
-                let show_hidden = text.starts_with('.');
-                let reload = show_hidden != flow.hidden_query;
-                flow.hidden_query = show_hidden;
-                let path = flow.browser_path.clone();
-                if reload {
-                    this.load_space_folders(path, cx);
-                }
                 if let Some(menu) = this.spaces_menu.open_mut() {
                     menu.active = 0;
                 }
@@ -1846,8 +1828,28 @@ impl Shell {
                 if this.add_space_slash_descend(cx) {
                     return;
                 }
-                if let Some(flow) = this.add_space.as_mut() {
-                    flow.active = 0;
+                let Some(flow) = this.add_space.as_mut() else {
+                    return;
+                };
+                if flow.manual_task.is_some() && flow.submit_task.is_none() {
+                    flow.submit_busy = false;
+                }
+                flow.revision += 1;
+                flow.manual = None;
+                flow.manual_task = None;
+                flow.error = None;
+                let text = flow.search.read(cx).text().to_string();
+                if manual_path_query(&text) {
+                    this.prepare_manual_space(false, false, cx);
+                    return;
+                }
+                let show_hidden = text.starts_with('.');
+                let reload = show_hidden != flow.hidden_query;
+                flow.hidden_query = show_hidden;
+                flow.active = 0;
+                let path = flow.browser_path.clone();
+                if reload {
+                    this.load_space_folders(path, cx);
                 }
                 cx.notify();
             }
