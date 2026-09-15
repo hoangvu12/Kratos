@@ -96,3 +96,104 @@ fn write<T: Serialize + ?Sized>(path: &Path, value: &T) -> io::Result<()> {
     temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use roboco_rpc::methods;
+    use serde_json::json;
+    use std::{sync::Arc, time::Duration};
+
+    #[tokio::test]
+    async fn cached_listener_history_survives_offline_restart_and_is_engine_scoped() {
+        let engine_dir = tempfile::tempdir().unwrap();
+        let client_dir = tempfile::tempdir().unwrap();
+        let core = roboco_engine::EngineCore::assemble_with_profile(
+            roboco_engine::EngineProfile::local(engine_dir.path()).unwrap(),
+            Arc::new(roboco_engine::HarnessRegistry::new()),
+            roboco_proto::HarnessId::Mock,
+        )
+        .unwrap();
+        core.workspace
+            .create_chat("same-chat", None, None, None, None)
+            .unwrap();
+        core.doc_host
+            .open("same-chat")
+            .unwrap()
+            .write_user_message("message", "cached history", 123)
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(roboco_engine::listener::serve_listener(
+            listener,
+            core.rpc_service(),
+            roboco_engine::pairing::PairingStore::open(engine_dir.path()).unwrap(),
+        ));
+        let client = roboco_rpc::connect_ws(&url).await.unwrap();
+        let mut chat_stream = client
+            .subscribe(methods::WATCH_CHATS, json!({}))
+            .await
+            .unwrap();
+        let chats: Vec<Chat> = serde_json::from_value(
+            tokio::time::timeout(Duration::from_secs(5), chat_stream.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        let mut transcript = client
+            .subscribe(methods::WATCH_DOC_MESSAGES, json!({"chatId":"same-chat"}))
+            .await
+            .unwrap();
+        let update: roboco_doc::transcript_delta::TranscriptUpdate = serde_json::from_value(
+            tokio::time::timeout(Duration::from_secs(5), transcript.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        let roboco_doc::transcript_delta::TranscriptFrame::Reset { reset: entries } = update.frame
+        else {
+            panic!("initial transcript must reset")
+        };
+        assert_eq!(entries.len(), 1);
+        let cache = EngineCache::new(client_dir.path());
+        cache
+            .save_rows(
+                "first",
+                &CachedRows {
+                    chats,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        cache
+            .save_transcript("first", "same-chat", &entries)
+            .unwrap();
+        cache.save_transcript("second", "same-chat", &[]).unwrap();
+        server.abort();
+        drop(client);
+        core.shutdown().await;
+        drop(core);
+        drop(cache);
+        let reopened = EngineCache::new(client_dir.path());
+        assert_eq!(
+            reopened.load_rows("first").unwrap().chats[0].id,
+            "same-chat"
+        );
+        assert_eq!(
+            reopened.load_transcript("first", "same-chat").unwrap()[0].id,
+            "message"
+        );
+        assert!(
+            reopened
+                .load_transcript("second", "same-chat")
+                .unwrap()
+                .is_empty()
+        );
+        reopened.forget_engine("first").unwrap();
+        assert!(reopened.load_rows("first").is_none());
+        assert!(reopened.load_transcript("first", "same-chat").is_none());
+        assert!(reopened.load_transcript("second", "same-chat").is_some());
+    }
+}
