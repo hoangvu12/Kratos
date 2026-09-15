@@ -29,6 +29,29 @@ pub fn device_online(last_seen: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bo
         .is_some_and(|at| now.signed_duration_since(at).num_seconds() <= DEVICE_ONLINE_WINDOW_SECS)
 }
 
+/// Corner presence dot of a device row. A row backed by a known engine
+/// reports the owning engine's registry connection; any other row keeps the
+/// last-seen presence window. Pure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresenceDot {
+    /// Emerald with a soft glow — live.
+    Connected,
+    /// Amber — the engine dropped and is retrying.
+    Reconnecting,
+    /// Faint ink — off (or past the last-seen window).
+    Off,
+}
+
+pub fn presence_dot(connection: Option<&EngineConnectionState>, online: bool) -> PresenceDot {
+    match connection {
+        Some(EngineConnectionState::Connected) => PresenceDot::Connected,
+        Some(EngineConnectionState::Reconnecting) => PresenceDot::Reconnecting,
+        Some(EngineConnectionState::Off) => PresenceDot::Off,
+        None if online => PresenceDot::Connected,
+        None => PresenceDot::Off,
+    }
+}
+
 /// Compact last-seen line. Pure.
 pub fn format_last_seen(last_seen: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
     let Some(at) = last_seen else {
@@ -328,31 +351,35 @@ impl Render for DevicesPage {
                     "ios" | "android" => crate::icons::SMARTPHONE,
                     _ => crate::icons::MONITOR,
                 };
-                // Presence lives ON the identity tile: a corner dot (emerald
-                // online with a soft glow, faint offline), ringed by the card
-                // tone so it "cuts" the tile — roboco settings.devices.tsx
-                // `border-2 border-[var(--card)]` +
+                // Presence lives ON the identity tile: a corner dot ringed by
+                // the card tone so it "cuts" the tile. Engine-backed rows
+                // report the owning engine's connection (emerald glow when
+                // connected, amber while reconnecting, faint ink when off);
+                // other rows keep the last-seen window — roboco
+                // settings.devices.tsx `border-2 border-[var(--card)]` +
                 // `shadow-[0_0_6px_rgba(52,211,153,0.55)]`.
-                let tile = widgets::row_tile(&theme, platform_icon).relative().child(
-                    div()
+                let dot = presence_dot(connection.as_ref(), online);
+                let tile = widgets::row_tile(&theme, platform_icon).relative().child({
+                    let el = div()
                         .absolute()
                         .bottom(px(-3.0))
                         .right(px(-3.0))
                         .size(px(9.0))
                         .rounded_full()
                         .border_2()
-                        .border_color(theme.surface)
-                        .when(online, |el| {
-                            el.bg(emerald).shadow(vec![gpui::BoxShadow {
-                                color: emerald.opacity(0.55),
-                                offset: gpui::point(px(0.0), px(0.0)),
-                                blur_radius: px(6.0),
-                                spread_radius: px(0.0),
-                                inset: false,
-                            }])
-                        })
-                        .when(!online, |el| el.bg(crate::theme::ink(0.22))),
-                );
+                        .border_color(theme.surface);
+                    match dot {
+                        PresenceDot::Connected => el.bg(emerald).shadow(vec![gpui::BoxShadow {
+                            color: emerald.opacity(0.55),
+                            offset: gpui::point(px(0.0), px(0.0)),
+                            blur_radius: px(6.0),
+                            spread_radius: px(0.0),
+                            inset: false,
+                        }]),
+                        PresenceDot::Reconnecting => el.bg(theme.warning),
+                        PresenceDot::Off => el.bg(crate::theme::ink(0.22)),
+                    }
+                });
                 // One quiet meta line: platform · version · (offline: last
                 // seen) · id chip.
                 let mut meta: Vec<AnyElement> = vec![
@@ -612,6 +639,22 @@ mod tests {
             format_last_seen(Some(now - TimeDelta::days(2)), now),
             "2d ago"
         );
+    }
+
+    #[test]
+    fn presence_dot_prefers_the_engine_connection_state() {
+        use crate::engine_registry::EngineConnectionState::*;
+        // Engine-backed rows report the registry connection, whatever the
+        // last-seen window says.
+        assert_eq!(presence_dot(Some(&Connected), false), PresenceDot::Connected);
+        assert_eq!(
+            presence_dot(Some(&Reconnecting), false),
+            PresenceDot::Reconnecting
+        );
+        assert_eq!(presence_dot(Some(&Off), true), PresenceDot::Off);
+        // Rows with no engine entry keep the last-seen presence window.
+        assert_eq!(presence_dot(None, true), PresenceDot::Connected);
+        assert_eq!(presence_dot(None, false), PresenceDot::Off);
     }
 
     #[test]
