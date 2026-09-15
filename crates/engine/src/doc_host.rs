@@ -63,70 +63,11 @@ const ATTACHMENT_WAIT_MAX_MS: i64 = ATTACHMENT_WAIT_MAX.as_millis() as i64;
 /// timer only covers the give-up transition and missed kicks).
 const ATTACHMENT_WAIT_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Edge connection config. The bearer is a **provider**, never a snapshot:
-/// every room (re)connect and HTTP request re-reads it, so WorkOS access-token
-/// refreshes (~1h expiry) take effect without an engine restart. Dev bearers
-/// (which never expire) ride the same seam as a [`roboco_rpc::StaticToken`].
-#[derive(Clone)]
-pub struct EdgeConfig {
-    /// Edge base URL (`http(s)://…`); rewritten to `ws(s)` for the room socket.
-    pub url: String,
-    /// Fresh-bearer provider (the relay's `TokenSource`), consulted per
-    /// connect/request. `None` from the provider = signed out.
-    pub token: Arc<dyn roboco_rpc::TokenSource>,
-    /// This engine's device id, carried on room dials (`&device=`) so the
-    /// edge can attribute sockets in logs. Debugging the 2026-08-04 deaf
-    /// socket meant reverse-engineering devices from rotating IPv6 privacy
-    /// addresses; never again. Empty = omitted (tests).
-    pub device_id: String,
-}
-
-impl std::fmt::Debug for EdgeConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EdgeConfig")
-            .field("url", &self.url)
-            .field("token", &"<provider>")
-            .finish()
-    }
-}
-
-impl EdgeConfig {
-    pub fn new(url: impl Into<String>, token: Arc<dyn roboco_rpc::TokenSource>) -> Self {
-        Self {
-            url: url.into(),
-            token,
-            device_id: String::new(),
-        }
-    }
-
-    /// Attribute this engine's room sockets in edge logs.
-    pub fn with_device(mut self, device_id: impl Into<String>) -> Self {
-        self.device_id = device_id.into();
-        self
-    }
-
-    /// Fixed bearer — dev mode and tests, where tokens never expire.
-    pub fn with_static_token(url: impl Into<String>, token: impl Into<String>) -> Self {
-        Self::new(url, Arc::new(roboco_rpc::StaticToken(token.into())))
-    }
-
-    /// The current bearer, refreshed by the provider if stale. `None` = signed out.
-    pub async fn bearer(&self) -> Option<String> {
-        self.token.token().await
-    }
-
-    pub fn token_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
-        self.token.subscribe()
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct DocHostConfig {
     pub device_id: String,
     /// Harness for doc-command runs on chats without a workspace `config` row.
     pub default_harness: HarnessId,
-    /// Legacy assembly field; documents no longer connect to the edge.
-    pub edge: Option<EdgeConfig>,
 }
 
 struct DocHostInner {
@@ -2586,8 +2527,6 @@ impl DocHost {
             self.save_snapshot(&handle);
         }
     }
-
-    pub fn disconnect_edge(&self) {}
 }
 
 /// The resumed-turn prompt for answers to a question whose run died: each
@@ -2647,7 +2586,6 @@ mod source_context_tests {
             DocHostConfig {
                 device_id: "device-a".into(),
                 default_harness: roboco_proto::HarnessId::Mock,
-                edge: None,
             },
         );
         host.set_repos(crate::repos::Repos::new(

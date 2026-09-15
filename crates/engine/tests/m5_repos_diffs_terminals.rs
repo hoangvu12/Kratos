@@ -74,7 +74,6 @@ fn assemble(dir: &Path) -> EngineCore {
         dir,
         Arc::new(HarnessRegistry::new()),
         roboco_proto::HarnessId::Mock,
-        None,
     )
     .expect("engine assembles")
 }

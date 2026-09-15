@@ -1,8 +1,8 @@
 use futures::StreamExt;
-use std::{sync::Arc, time::Duration};
 use roboco_engine::{EngineCore, HarnessRegistry};
 use roboco_proto::{HarnessId, PreviewService};
 use roboco_rpc::{RpcReply, RpcService, methods};
+use std::{sync::Arc, time::Duration};
 
 fn service(device: &str, cwd: &std::path::Path, id: &str) -> PreviewService {
     PreviewService {
@@ -32,7 +32,6 @@ async fn preview_watch_follows_the_session_checkout_and_owning_device() {
         &temp.path().join("engine"),
         Arc::new(HarnessRegistry::new()),
         HarnessId::Mock,
-        None,
     )
     .unwrap();
     core.workspace

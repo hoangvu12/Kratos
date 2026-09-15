@@ -14,7 +14,7 @@ use roboco_proto::HarnessId;
 const CHAT: &str = "chat-salvage";
 
 fn assemble(dir: &std::path::Path) -> EngineCore {
-    EngineCore::assemble(dir, Arc::new(HarnessRegistry::new()), HarnessId::Mock, None)
+    EngineCore::assemble(dir, Arc::new(HarnessRegistry::new()), HarnessId::Mock)
         .expect("engine core assembles")
 }
 

@@ -7,9 +7,9 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use roboco_proto::WorkspaceScope;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use roboco_proto::WorkspaceScope;
 
 use crate::EngineError;
 
@@ -380,7 +380,6 @@ mod tests {
             profile,
             std::sync::Arc::new(crate::default_registry()),
             roboco_proto::HarnessId::Mock,
-            None,
         )
         .unwrap();
 
@@ -404,7 +403,6 @@ mod tests {
             dir.path(),
             std::sync::Arc::new(crate::default_registry()),
             roboco_proto::HarnessId::Mock,
-            None,
         )
         .unwrap();
 

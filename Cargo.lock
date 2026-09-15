@@ -7583,15 +7583,12 @@ dependencies = [
 name = "roboco-sync"
 version = "0.2.65"
 dependencies = [
- "block2 0.6.2",
  "loro",
  "roboco-doc",
  "rusqlite",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
- "tokio",
- "tracing",
  "uuid",
 ]
 

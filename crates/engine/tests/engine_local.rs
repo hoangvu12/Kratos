@@ -12,7 +12,6 @@ async fn local_listener_feeds_exclude_legacy_cloud_rows_and_keep_transcripts() {
         dir.path(),
         Arc::new(HarnessRegistry::new()),
         HarnessId::Mock,
-        None,
     )
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -95,7 +94,6 @@ async fn local_listener_feeds_exclude_legacy_cloud_rows_and_keep_transcripts() {
         dir.path(),
         Arc::new(HarnessRegistry::new()),
         HarnessId::Mock,
-        None,
     )
     .unwrap();
     assert_eq!(core.workspace.read_chats().unwrap().len(), 1);

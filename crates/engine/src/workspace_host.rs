@@ -10,7 +10,6 @@ use roboco_proto::{Chat, ChatConfig, Device, Session, Space};
 use roboco_sync::DocsStore;
 
 use crate::EngineError;
-use crate::doc_host::EdgeConfig;
 
 /// Legacy Loro workspace snapshot row — now only read once, as the migration
 /// source for the registry seed. Kept on disk for rollback.
@@ -37,8 +36,6 @@ pub struct WorkspaceHostConfig {
     /// The signed-in user — registries are per-user (`reg1/{orgId}/{userId}`):
     /// spaces/sessions are private to their owner, never org-visible.
     pub user_id: String,
-    /// Legacy assembly field; registry state is always engine-local.
-    pub edge: Option<EdgeConfig>,
 }
 
 struct WorkspaceHostInner {
@@ -183,8 +180,6 @@ impl WorkspaceHost {
     pub fn device_id(&self) -> &str {
         &self.inner.config.device_id
     }
-
-    pub fn disconnect_edge(&self) {}
 
     /// Local registry snapshots are authoritative immediately on startup.
     pub fn registry_synced(&self) -> bool {
@@ -912,7 +907,6 @@ mod tests {
                 platform: "macos".into(),
                 org_id: "test-org".into(),
                 user_id: "test-user".into(),
-                edge: None,
             },
         )
         .unwrap();

@@ -20,11 +20,9 @@ use serde::{Deserialize, Serialize};
 
 mod client;
 mod server;
-mod token;
 
 pub use client::{RpcClient, RpcSubscription, connect_ws};
 pub use server::{serve_connection, serve_ws_listener};
-pub use token::{StaticToken, TokenSource};
 
 /// RPC method names — single source of truth for both ends.
 /// Full surface: docs/research/feature-inventory.md §2.

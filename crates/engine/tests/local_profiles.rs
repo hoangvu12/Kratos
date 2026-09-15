@@ -16,7 +16,7 @@ fn config(data_dir: &Path) -> EngineConfig {
 }
 
 fn assemble(profile: EngineProfile) -> EngineCore {
-    EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock, None)
+    EngineCore::assemble_with_profile(profile, Arc::new(default_registry()), HarnessId::Mock)
         .expect("assemble profile")
 }
 

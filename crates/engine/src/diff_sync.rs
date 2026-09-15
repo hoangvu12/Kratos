@@ -44,7 +44,6 @@ use tokio_util::sync::CancellationToken;
 use roboco_proto::{Chat, CheckoutDiff, DiffFileSummary};
 
 use crate::EngineError;
-use crate::doc_host::EdgeConfig;
 use crate::repos::{CheckoutIdentity, Repos};
 use crate::workspace_host::WorkspaceHost;
 
@@ -63,27 +62,6 @@ const REPAIR_INTERVAL: Duration = Duration::from_secs(120);
 const MAX_WATCH_DIRS: usize = 8_000;
 /// `git hash-object -t tree /dev/null` — diff base for repos with no commits yet.
 const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
-/// Latest-only diff sidecar published to each chat's session DO slot
-/// (`POST /diff/{chatId}`; shape: edge/src/session-doc/sidecar.ts).
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiffSidecar {
-    pub chat_id: String,
-    pub device_id: String,
-    pub checkout_path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub head_sha: Option<String>,
-    pub patch: String,
-    pub files: Vec<DiffFileSummary>,
-    pub additions: u32,
-    pub deletions: u32,
-    pub truncated: bool,
-    /// Epoch millis.
-    pub published_at: i64,
-}
 
 /// One bounded atomic snapshot of a checkout's working tree.
 #[derive(Debug, Clone)]
@@ -176,15 +154,10 @@ pub struct CheckoutDiffSync {
 impl CheckoutDiffSync {
     /// Build and start the sync loop: follows the workspace chat watch and runs the
     /// 2-minute repair tick. Requires a tokio runtime.
-    pub fn start(
-        repos: Repos,
-        workspace: WorkspaceHost,
-        device_id: &str,
-        edge: Option<EdgeConfig>,
-    ) -> Self {
+    pub fn start(repos: Repos, workspace: WorkspaceHost, device_id: &str) -> Self {
         // Grace = one repair interval: an entry must survive at least one full
         // fresh revalidation pass before reconcile may tear it down.
-        Self::start_with_orphan_grace(repos, workspace, device_id, edge, REPAIR_INTERVAL)
+        Self::start_with_orphan_grace(repos, workspace, device_id, REPAIR_INTERVAL)
     }
 
     /// [`CheckoutDiffSync::start`] with an explicit orphan grace — test hook so
@@ -194,7 +167,6 @@ impl CheckoutDiffSync {
         repos: Repos,
         workspace: WorkspaceHost,
         device_id: &str,
-        _edge: Option<EdgeConfig>,
         orphan_grace: Duration,
     ) -> Self {
         let (diffs_tx, _) = watch::channel(Vec::new());
