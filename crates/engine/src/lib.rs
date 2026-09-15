@@ -575,7 +575,38 @@ pub async fn serve_engine_ipc(
     let pairing = pairing::PairingStore::open(data_dir)?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     tracing::info!(address = %listener.local_addr()?, "engine local listener ready");
-    Ok(tokio::spawn(listener::serve_listener(listener, service, pairing)))
+    Ok(tokio::spawn(listener::serve_listener(
+        listener, service, pairing,
+    )))
+}
+
+/// Owns the opt-in remote bind and its connections. Dropping it closes both.
+pub struct EngineListener {
+    pub address: std::net::SocketAddr,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for EngineListener {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+pub async fn serve_engine_remote(
+    address: std::net::SocketAddr,
+    service: Arc<dyn roboco_rpc::RpcService>,
+    data_dir: &Path,
+) -> anyhow::Result<EngineListener> {
+    let pairing = pairing::PairingStore::open(data_dir)?;
+    let socket = tokio::net::TcpListener::bind(address).await?;
+    let address = socket.local_addr()?;
+    let task = tokio::spawn(listener::serve_listener_with_policy(
+        socket,
+        service,
+        pairing,
+        listener::AccessPolicy::Paired,
+    ));
+    Ok(EngineListener { address, task })
 }
 
 /// Best-effort human name for this device's registry row.
@@ -815,7 +846,9 @@ impl DeviceIdentityLock {
                     Ok(file) => break file,
                     Err(err)
                         if (err.raw_os_error()
-                            == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+                            == Some(
+                                windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32,
+                            )
                             || err.kind() == std::io::ErrorKind::PermissionDenied)
                             && retries > 0 =>
                     {

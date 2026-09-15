@@ -11,28 +11,59 @@ use tokio_tungstenite::tungstenite::{handshake::derive_accept_key, protocol::Rol
 
 type Reply = Response<Full<Bytes>>;
 
+/// The bind determines policy, never the address of an individual peer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AccessPolicy {
+    Local,
+    Paired,
+}
+
 /// Serve a previously bound local socket, preserving credential-free native IPC.
 pub async fn serve_listener(
     listener: TcpListener,
     service: Arc<dyn roboco_rpc::RpcService>,
     pairing: PairingStore,
 ) {
+    serve_listener_with_policy(listener, service, pairing, AccessPolicy::Local).await;
+}
+
+pub async fn serve_listener_with_policy(
+    listener: TcpListener,
+    service: Arc<dyn roboco_rpc::RpcService>,
+    pairing: PairingStore,
+    policy: AccessPolicy,
+) {
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let _cancel_on_drop = cancel.clone().drop_guard();
+    if let Ok(address) = listener.local_addr() {
+        tracing::info!(%address, paired = policy == AccessPolicy::Paired, "engine listener serving");
+    }
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
                 let service = service.clone();
                 let pairing = pairing.clone();
+                let connection_cancel = cancel.clone();
                 tokio::spawn(async move {
+                    let request_cancel = connection_cancel.clone();
                     let handler = service_fn(move |request| {
-                        handle(request, service.clone(), pairing.clone())
+                        handle(
+                            request,
+                            service.clone(),
+                            pairing.clone(),
+                            policy,
+                            request_cancel.clone(),
+                        )
                     });
-                    let _ = hyper::server::conn::http1::Builder::new()
+                    let mut builder = hyper::server::conn::http1::Builder::new();
+                    builder
                         .timer(TokioTimer::new())
                         .header_read_timeout(Duration::from_secs(10))
-                        .max_buf_size(16 * 1024)
-                        .serve_connection(TokioIo::new(stream), handler)
-                        .with_upgrades()
-                        .await;
+                        .max_buf_size(16 * 1024);
+                    tokio::select! {
+                        _ = connection_cancel.cancelled() => {},
+                        _ = builder.serve_connection(TokioIo::new(stream), handler).with_upgrades() => {},
+                    }
                 });
             }
             Err(error) => {
@@ -47,6 +78,8 @@ async fn handle(
     mut request: Request<Incoming>,
     service: Arc<dyn roboco_rpc::RpcService>,
     pairing: PairingStore,
+    policy: AccessPolicy,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<Reply, Infallible> {
     // Preserve the native-only local IPC boundary for HTTP as well as WebSocket.
     if request.headers().contains_key("origin") {
@@ -90,6 +123,24 @@ async fn handle(
             Ok(Ok(None)) => reply(StatusCode::UNAUTHORIZED, "invalid credential"),
             _ => reply(StatusCode::BAD_REQUEST, "redemption failed"),
         });
+    }
+    // Redemption above authenticates a single-use pair code. Every other
+    // remote request requires a current session, including health and upgrades.
+    if policy == AccessPolicy::Paired {
+        let Some(credential) = bearer(&request).map(str::to_owned) else {
+            return Ok(reply(StatusCode::UNAUTHORIZED, "invalid credential"));
+        };
+        let store = pairing.clone();
+        match tokio::task::spawn_blocking(move || store.authenticate(&credential)).await {
+            Ok(Ok(Some(_))) => {}
+            Ok(Ok(None)) => return Ok(reply(StatusCode::UNAUTHORIZED, "invalid credential")),
+            _ => {
+                return Ok(reply(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "session check unavailable",
+                ));
+            }
+        }
     }
     if path == "/pairing/session" && request.method() == hyper::Method::GET {
         let Some(token) = bearer(&request).map(str::to_owned) else {
@@ -148,7 +199,10 @@ async fn handle(
                 None,
             )
             .await;
-            roboco_rpc::serve_websocket(ws, service).await;
+            tokio::select! {
+                _ = cancel.cancelled() => {},
+                _ = roboco_rpc::serve_websocket(ws, service) => {},
+            }
         }
     });
     Ok(Response::builder()

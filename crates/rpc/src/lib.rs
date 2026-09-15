@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 mod client;
 mod server;
 
-pub use client::{RpcClient, RpcSubscription, connect_ws};
+pub use client::{RpcClient, RpcSubscription, connect_ws, connect_ws_authenticated};
 pub use server::{serve_connection, serve_websocket, serve_ws_listener};
 
 /// RPC method names — single source of truth for both ends.
