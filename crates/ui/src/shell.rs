@@ -2742,12 +2742,16 @@ impl Shell {
         doc_id: &str,
         cx: &mut Context<Self>,
     ) -> Option<Task<()>> {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Ok(engine) = self.state.read(cx).target_for_id(chat_id) else {
             self.state
                 .update(cx, |s, cx| s.watch_subagent_doc(doc_id.to_string(), cx));
             return None;
         };
-        let blob_ref = format!("{chat_id}/{doc_id}");
+        let raw_chat = crate::engine_registry::ScopedId::parse(chat_id)
+            .ok()?
+            .raw_id;
+        let raw_doc = crate::engine_registry::ScopedId::parse(doc_id).ok()?.raw_id;
+        let blob_ref = format!("{raw_chat}/{raw_doc}");
         let state = self.state.clone();
         let doc_id = doc_id.to_string();
         Some(cx.spawn(async move |_, cx| {
@@ -3323,9 +3327,15 @@ impl Shell {
             SettingsSection::RemoteAccess => {
                 if self.remote_access_page.is_none() {
                     let state = self.state.clone();
-                    self.remote_access_page = Some(cx.new(|cx| crate::settings::remote_access::RemoteAccessPage::new(state, cx)));
+                    self.remote_access_page = Some(cx.new(|cx| {
+                        crate::settings::remote_access::RemoteAccessPage::new(state, cx)
+                    }));
                 }
-                self.remote_access_page.as_ref().unwrap().clone().into_any_element()
+                self.remote_access_page
+                    .as_ref()
+                    .unwrap()
+                    .clone()
+                    .into_any_element()
             }
             SettingsSection::Devices => {
                 if self.devices_page.is_none() {

@@ -1498,8 +1498,9 @@ pub fn rows_for_entry(
 /// the smoothness measurement knob. Off by default; zero cost when off.
 fn frame_stats_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED
-        .get_or_init(|| std::env::var("ROBOCO_FRAME_STATS").is_ok_and(|v| !v.is_empty() && v != "0"))
+    *ENABLED.get_or_init(|| {
+        std::env::var("ROBOCO_FRAME_STATS").is_ok_and(|v| !v.is_empty() && v != "0")
+    })
 }
 
 const FRAME_STATS_WINDOW: usize = 240;
@@ -4347,7 +4348,10 @@ impl Transcript {
             Some(BlobFetch::Loading(_)) => return,
             Some(BlobFetch::Failed) | None => {}
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(chat_id) = self.chat_id.as_deref() else {
+            return;
+        };
+        let Ok(engine) = self.state.read(cx).target_for_id(chat_id) else {
             return;
         };
         let is_diff = blob_ref.ends_with(".diff");
@@ -4634,19 +4638,13 @@ impl Transcript {
 
     fn spawn_attachment_load(&mut self, device_id: String, path: String, cx: &mut Context<Self>) {
         use crate::attachments::{read_attachment_image, store_error, store_loaded};
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Ok(engine) = self.state.read(cx).target_for_id(&device_id) else {
             store_error(&device_id, &path);
             return;
         };
-        let local = self.state.read(cx).local_device_id.clone();
-        // Relay-forward only for a genuinely remote owner; the local device's
-        // files are served directly.
-        let target = (local.as_deref() != Some(device_id.as_str())).then(|| device_id.clone());
         let key = (device_id.clone(), path.clone());
         let task = cx.spawn(async move |this, cx| {
-            match read_attachment_image(&engine, cx.background_executor(), target.as_deref(), &path)
-                .await
-            {
+            match read_attachment_image(&engine, cx.background_executor(), None, &path).await {
                 Some(loaded) => store_loaded(&device_id, &path, loaded.name.into(), loaded.image),
                 None => store_error(&device_id, &path),
             }
@@ -5209,12 +5207,17 @@ impl Transcript {
         let Some(chat_id) = self.chat_id.clone() else {
             return;
         };
-        let engine = self.state.read(cx).engine().cloned();
+        let Ok(engine) = self.state.read(cx).target_for_id(&chat_id) else {
+            return;
+        };
+        if !engine.is_connected() {
+            return;
+        }
         self.state.update(cx, |s, cx| {
             s.retry_pending_send(&chat_id, chrono::Utc::now());
             cx.notify();
         });
-        if let Some(engine) = engine {
+        {
             cx.spawn(async move |_, _| {
                 let params = serde_json::json!({ "chatId": chat_id });
                 if let Err(err) = engine
@@ -7672,6 +7675,45 @@ impl Render for Transcript {
             .into_any_element()
         } else {
             list_el.into_any_element()
+        };
+        let offline = self.chat_id.as_deref().and_then(|chat_id| {
+            self.state
+                .read(cx)
+                .target_for_id(chat_id)
+                .ok()
+                .filter(|target| !target.is_connected())
+                .map(|target| match target.connection_state() {
+                    crate::engine_registry::EngineConnectionState::Off => {
+                        "Engine off. Cached history is read-only."
+                    }
+                    _ => "Reconnecting… Cached history is read-only.",
+                })
+        });
+        let content = if let Some(message) = offline {
+            let theme = Theme::of(cx);
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .id("engine-reconnect-strip")
+                        .h(px(24.0))
+                        .flex_shrink_0()
+                        .px(px(12.0))
+                        .flex()
+                        .items_center()
+                        .text_xs()
+                        .bg(theme.surface)
+                        .text_color(theme.text_muted)
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(message),
+                )
+                .child(div().flex_1().min_h_0().child(content))
+                .into_any_element()
+        } else {
+            content
         };
         let root = div()
             .relative()
