@@ -30,6 +30,9 @@ pub struct ScopedId {
     pub raw_id: String,
 }
 impl ScopedId {
+    pub fn is_scoped(id: &str) -> bool {
+        id.starts_with(PREFIX)
+    }
     pub fn encode(engine: &EngineKey, raw_id: &str) -> String {
         if engine.is_local() && !raw_id.starts_with(PREFIX) {
             return raw_id.into();
@@ -99,6 +102,9 @@ impl RegistrySnapshot {
                 chat.device_id = scope(&chat.device_id);
                 chat.space_id = chat.space_id.map(|id| scope(&id));
                 chat.checkout_id = chat.checkout_id.map(|id| scope(&id));
+                if let Some(context) = &mut chat.source_context {
+                    context.checkout_id = scope(&context.checkout_id);
+                }
                 out.chats.push(chat);
             }
             for mut space in engine.spaces.clone() {
@@ -706,3 +712,6 @@ fn decode<T: DeserializeOwned>(value: Option<Value>) -> Result<T, RpcError> {
     serde_json::from_value(value.ok_or(RpcError::Closed)?)
         .map_err(|_| RpcError::Failed("Invalid engine state frame".into()))
 }
+
+#[cfg(test)]
+mod tests;

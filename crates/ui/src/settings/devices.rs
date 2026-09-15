@@ -13,9 +13,11 @@ use roboco_proto::WorkspaceScope;
 use roboco_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::engine_registry::{EngineConnectionState, EngineKey, ScopedId};
 use crate::popover;
 use crate::state::AppState;
 use crate::theme::Theme;
+use gpui_tokio::Tokio;
 
 /// A device that pinged within this window shows a presence dot (engines
 /// heartbeat every 15s; 70s tolerates a couple of missed beats).
@@ -63,6 +65,9 @@ struct RenameDialog {
 pub struct DevicesPage {
     state: Entity<AppState>,
     rename: Option<RenameDialog>,
+    pairing: Entity<ComposerInput>,
+    _pairing_events: Subscription,
+    pairing_busy: bool,
     /// Device id whose id-chip shows "Copied" right now.
     copied: Option<String>,
     error: Option<SharedString>,
@@ -74,7 +79,16 @@ pub struct DevicesPage {
 impl DevicesPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        let pairing = cx.new(|cx| ComposerInput::new("Paste a pairing URL", cx));
+        let pairing_events = cx.subscribe(&pairing, |this: &mut Self, _, event, cx| {
+            if matches!(event, ComposerInputEvent::Submitted) {
+                this.pair(cx);
+            }
+        });
         Self {
+            pairing,
+            _pairing_events: pairing_events,
+            pairing_busy: false,
             state,
             rename: None,
             copied: None,
@@ -83,6 +97,59 @@ impl DevicesPage {
             copy_task: None,
             _observe: observe,
         }
+    }
+
+    fn pair(&mut self, cx: &mut Context<Self>) {
+        if self.pairing_busy {
+            return;
+        }
+        let Some(registry) = self.state.read(cx).registry().cloned() else {
+            return;
+        };
+        let url = self.pairing.read(cx).text().trim().to_string();
+        if url.is_empty() {
+            return;
+        }
+        self.pairing_busy = true;
+        self.error = None;
+        let operation = Tokio::spawn(
+            cx,
+            async move { registry.pair(&url, "Roboco desktop").await },
+        );
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = operation.await;
+            this.update(cx, |page, cx| {
+                page.pairing_busy = false;
+                match result {
+                    Ok(Ok(_)) => page
+                        .pairing
+                        .update(cx, |input, cx| input.set_text(String::new(), cx)),
+                    Ok(Err(error)) => page.error = Some(error.to_string().into()),
+                    Err(_) => page.error = Some("Pairing was interrupted".into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn forget(&mut self, key: EngineKey, cx: &mut Context<Self>) {
+        let Some(registry) = self.state.read(cx).registry().cloned() else {
+            return;
+        };
+        let operation = Tokio::spawn(cx, async move { registry.forget(&key).await });
+        cx.spawn(async move |this, cx| {
+            let result = operation.await;
+            this.update(cx, |page, cx| {
+                if !matches!(result, Ok(Ok(()))) {
+                    page.error = Some("Could not forget engine".into());
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn open_rename(&mut self, device_id: String, current: String, cx: &mut Context<Self>) {
@@ -110,7 +177,7 @@ impl DevicesPage {
             cx.notify();
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Ok(engine) = self.state.read(cx).target_for_id(&dialog.device_id) else {
             return;
         };
         let params = serde_json::json!({
@@ -132,7 +199,11 @@ impl DevicesPage {
     }
 
     fn copy_id(&mut self, device_id: String, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(device_id.clone()));
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            ScopedId::parse(&device_id)
+                .map(|id| id.raw_id)
+                .unwrap_or_else(|_| device_id.clone()),
+        ));
         self.copied = Some(device_id);
         self.copy_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -232,7 +303,20 @@ impl Render for DevicesPage {
             .into_iter()
             .enumerate()
             .map(|(ix, device)| {
-                let online = device_online(device.last_seen_at, now);
+                let online = self.state.read(cx).device_online(&device.id, now);
+                let engine_key = ScopedId::parse(&device.id).ok().map(|id| id.engine);
+                let connection = engine_key
+                    .as_ref()
+                    .and_then(|key| {
+                        self.state
+                            .read(cx)
+                            .registry_snapshot
+                            .engines
+                            .iter()
+                            .find(|e| &e.key == key)
+                    })
+                    .map(|e| e.state.clone());
+                let forget_key = engine_key.filter(|key| !key.is_local());
                 let is_local = local_id.as_deref() == Some(device.id.as_str());
                 let id_copied = copied.as_deref() == Some(device.id.as_str());
                 let copy_id = device.id.clone();
@@ -285,6 +369,17 @@ impl Render for DevicesPage {
                             .into_any_element(),
                     );
                 }
+                if let Some(connection) = connection {
+                    meta.push(
+                        div()
+                            .child(match connection {
+                                EngineConnectionState::Connected => "Connected",
+                                EngineConnectionState::Reconnecting => "Reconnecting",
+                                EngineConnectionState::Off => "Off",
+                            })
+                            .into_any_element(),
+                    );
+                }
                 if !online {
                     meta.push(
                         div()
@@ -324,7 +419,11 @@ impl Render for DevicesPage {
                         .child(SharedString::from(if id_copied {
                             "Copied".to_string()
                         } else {
-                            short_id(&device.id)
+                            short_id(
+                                &ScopedId::parse(&device.id)
+                                    .map(|id| id.raw_id)
+                                    .unwrap_or_else(|_| device.id.clone()),
+                            )
                         }))
                         .into_any_element(),
                 );
@@ -351,6 +450,16 @@ impl Render for DevicesPage {
                                 } else {
                                     "This device"
                                 }),
+                        )
+                    })
+                    .when_some(forget_key, |el, key| {
+                        el.child(
+                            widgets::ghost_action(&theme)
+                                .id(("engine-forget", ix))
+                                .child("Forget")
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.forget(key.clone(), cx)),
+                                ),
                         )
                     })
                     .child(
@@ -420,6 +529,29 @@ impl Render for DevicesPage {
                                 })),
                         )
                     })
+                    .child(
+                        div()
+                            .mb(px(16.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.0))
+                            .child(widgets::row_title(&theme, "Add engine"))
+                            .child(popover::dialog_field(
+                                self.pairing.clone().into_any_element(),
+                            ))
+                            .child(
+                                popover::btn_primary(
+                                    &theme,
+                                    if self.pairing_busy {
+                                        "Connecting?"
+                                    } else {
+                                        "Connect"
+                                    },
+                                )
+                                .id("pair-engine")
+                                .on_click(cx.listener(|this, _, _, cx| this.pair(cx))),
+                            ),
+                    )
                     .child(card),
             )
             .when_some(dialog, |el, dialog| el.child(dialog))
