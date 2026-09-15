@@ -684,7 +684,7 @@ impl Composer {
             .selected_chat_row()
             .map(|chat| chat.device_id.clone())
             .unwrap_or_default();
-        let engine = state.engine().cloned();
+        let engine = crate::request_routing::selected_target(state).ok();
         let target =
             (state.local_device_id.as_deref() != Some(device.as_str())).then(|| device.clone());
         let visible = visible_queue_rows(
@@ -781,7 +781,7 @@ impl Composer {
             return;
         }
         let state = self.state.read(cx);
-        let Some(engine) = state.engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(state).ok() else {
             return;
         };
         let target = (state.local_device_id.as_deref() != Some(device.as_str())).then_some(device);
@@ -1100,7 +1100,7 @@ impl Composer {
         if self.queue_removing.contains(&id) {
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         let (chat_id, host_device_id, supported) = {
@@ -1253,7 +1253,7 @@ impl Composer {
         {
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         let (chat_id, host_device_id, supported) = {
@@ -1495,7 +1495,7 @@ impl Composer {
             self.queue_edit_lease_id.clone(),
             self.queue_edit_chat_id.clone(),
             self.queue_edit_host_device_id.clone(),
-            self.state.read(cx).engine().cloned(),
+            self.queue_edit_chat_id.as_deref().and_then(|id| self.state.read(cx).target_for_id(id).ok()),
         ) else {
             self.failure = Some("The edit lease was lost; your text is still in the editor".into());
             cx.notify();
@@ -1586,7 +1586,7 @@ impl Composer {
 
     fn start_queue_edit_renewal(
         &mut self,
-        engine: crate::state::EngineHandle,
+        engine: crate::engine_registry::EngineTarget,
         cx: &mut Context<Self>,
     ) {
         let (Some(id), Some(lease_id), Some(chat_id), Some(host_device_id)) = (
@@ -1642,7 +1642,7 @@ impl Composer {
             self.queue_edit_lease_id.clone(),
             self.queue_edit_chat_id.clone(),
             self.queue_edit_host_device_id.clone(),
-            self.state.read(cx).engine().cloned(),
+            self.queue_edit_chat_id.as_deref().and_then(|id| self.state.read(cx).target_for_id(id).ok()),
         ) else {
             return;
         };
@@ -1670,7 +1670,7 @@ impl Composer {
         failure: &'static str,
         cx: &mut Context<Self>,
     ) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         let (chat_id, host_device_id, host_supports_action) = {

@@ -1661,7 +1661,7 @@ impl Shell {
     /// Failures stay silent — the section just shows Home; the folder
     /// browser's own error row already covers "device didn't respond".
     fn load_space_drives(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = self.add_space.as_ref().and_then(|flow| flow.device.as_ref()).and_then(|device| self.state.read(cx).target_for_id(&device.id).ok()) else {
             return;
         };
         let local = self.state.read(cx).local_device_id.clone();
@@ -1861,7 +1861,7 @@ impl Shell {
 
     /// ListFolders on the flow's device (relay-forwarded when remote).
     pub(super) fn load_space_folders(&mut self, path: Option<String>, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = self.add_space.as_ref().and_then(|flow| flow.device.as_ref()).and_then(|device| self.state.read(cx).target_for_id(&device.id).ok()) else {
             return;
         };
         let local = self.state.read(cx).local_device_id.clone();
@@ -1918,7 +1918,7 @@ impl Shell {
 
     /// Create the space for the browser's current folder.
     fn submit_add_space(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = self.add_space.as_ref().and_then(|flow| flow.device.as_ref()).and_then(|device| self.state.read(cx).target_for_id(&device.id).ok()) else {
             return;
         };
         let Some(flow) = self.add_space.as_ref() else {
@@ -1955,7 +1955,7 @@ impl Shell {
         };
         flow.submit_busy = true;
         flow.error = None;
-        let space_id = uuid::Uuid::new_v4().to_string();
+        let space_id = crate::engine_registry::ScopedId::encode(engine.key(), &uuid::Uuid::new_v4().to_string());
         // Optimistic echo: the watch frame carrying the real row replaces it
         // by id (apply_spaces re-sorts; same-id upsert is idempotent).
         let space = Space {
@@ -2869,6 +2869,7 @@ impl Shell {
         let name = dialog.input.read(cx).text().trim().to_string();
         if !name.is_empty() {
             self.mutate(
+                &dialog.space_id,
                 serde_json::json!({ "op": "renameSpace", "spaceId": dialog.space_id, "name": name }),
                 cx,
             );
@@ -2879,6 +2880,7 @@ impl Shell {
     pub(super) fn delete_space(&mut self, space_id: String, cx: &mut Context<Self>) {
         self.delete_space_confirm = None;
         self.mutate(
+            &space_id,
             serde_json::json!({ "op": "deleteSpace", "spaceId": space_id }),
             cx,
         );

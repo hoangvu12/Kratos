@@ -142,7 +142,7 @@ impl HarnessesPage {
     /// `ListHarnesses` against the target device (installed probe + enabled
     /// set both come from where the CLIs actually live).
     fn load(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
             return;
         };
         let params = self.with_target(serde_json::json!({}));
@@ -165,7 +165,7 @@ impl HarnessesPage {
     }
 
     fn load_titles(&mut self, save: Option<TitleSettings>, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
             return;
         };
         let saving = save.is_some();
@@ -395,7 +395,7 @@ impl HarnessesPage {
     /// fresh catalog, so the rows repaint from the authoritative state in one
     /// round trip; refusals (engine guards) land in the error strip.
     fn toggle(&mut self, harness: HarnessId, enabled: bool, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
             return;
         };
         let params = self.with_target(serde_json::json!({

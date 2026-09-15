@@ -2359,7 +2359,7 @@ impl Shell {
         let browser = cx.new(|cx| {
             crate::browser::BrowserSurface::new(self.browser_context.clone(), remote, window, cx)
         });
-        if let Some(handle) = self.state.read(cx).engine().cloned() {
+        if let Ok(handle) = crate::request_routing::selected_target(self.state.read(cx)) {
             let chat_id = self.active_chat.clone();
             browser.update(cx, |browser, cx| {
                 browser.watch_previews(handle, chat_id, cx)
@@ -3560,8 +3560,8 @@ impl Shell {
     // ---- sidebar mutations ----
 
     /// Fire a Mutate op; failures surface in the sidebar notice strip.
-    fn mutate(&mut self, params: serde_json::Value, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+    fn mutate(&mut self, owner: &str, params: serde_json::Value, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).target_for_id(owner).ok() else {
             self.sidebar_notice = Some("Engine not connected".into());
             cx.notify();
             return;
@@ -3612,6 +3612,7 @@ impl Shell {
         let title = dialog.input.read(cx).text().trim().to_string();
         if !title.is_empty() {
             self.mutate(
+                &dialog.chat_id,
                 serde_json::json!({ "op": "renameChat", "chatId": dialog.chat_id, "title": title }),
                 cx,
             );
@@ -3646,6 +3647,7 @@ impl Shell {
     ) {
         self.close_chat_menu(cx);
         self.mutate(
+            &chat_id,
             serde_json::json!({ "op": "setChatArchived", "chatId": chat_id, "archived": archived }),
             cx,
         );
@@ -3725,6 +3727,7 @@ impl Shell {
         self.composer
             .update(cx, |composer, cx| composer.purge_chat(&chat_id, cx));
         self.mutate(
+            &chat_id,
             serde_json::json!({ "op": "deleteChat", "chatId": chat_id }),
             cx,
         );

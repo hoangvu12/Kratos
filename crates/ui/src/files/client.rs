@@ -11,7 +11,8 @@ use roboco_proto::{
 };
 use roboco_rpc::{RpcError, methods};
 
-use crate::state::{AppState, EngineHandle};
+use crate::state::AppState;
+use crate::engine_registry::EngineTarget;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FilesRequestContext {
@@ -25,17 +26,16 @@ impl FilesRequestContext {
     pub fn for_chat(state: &AppState, chat_id: &str) -> Option<Self> {
         let chat = state.chats.iter().find(|chat| chat.id == chat_id)?;
         let cwd = chat.cwd.clone()?;
-        let target_device_id = (state.local_device_id.as_deref() != Some(&chat.device_id))
-            .then(|| chat.device_id.clone());
+        let target_device_id = None;
         Some(Self {
             target: WorkspaceTarget {
-                chat_id: Some(chat.id.clone()),
+                chat_id: Some(crate::request_routing::raw_id(&chat.id).ok()?),
                 space_id: None,
                 checkout_path: None,
             },
             target_device_id,
             cwd,
-            checkout_id: chat.checkout_id.clone(),
+            checkout_id: chat.checkout_id.as_deref().map(crate::request_routing::raw_id).transpose().ok()?,
         })
     }
 }
@@ -84,7 +84,7 @@ pub(super) trait WorkspaceFilesTransport: Send + Sync {
     ) -> Result<mpsc::Receiver<Value>, RpcError>;
 }
 
-struct EngineFilesTransport(EngineHandle);
+struct EngineFilesTransport(EngineTarget);
 
 #[async_trait]
 impl WorkspaceFilesTransport for EngineFilesTransport {
@@ -102,7 +102,7 @@ impl WorkspaceFilesTransport for EngineFilesTransport {
 }
 
 impl WorkspaceFilesClient {
-    pub fn new(engine: EngineHandle, context: FilesRequestContext) -> Self {
+    pub fn new(engine: EngineTarget, context: FilesRequestContext) -> Self {
         Self {
             transport: Arc::new(EngineFilesTransport(engine)),
             context,

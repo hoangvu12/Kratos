@@ -428,7 +428,7 @@ impl AccountsPage {
     }
 
     fn load(&mut self, force_usage: bool, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
             self.snapshot = Loadable::Error("Engine not connected".into());
             return;
         };
@@ -461,7 +461,7 @@ impl AccountsPage {
         account: &AgentAccount,
         cx: &mut Context<Self>,
     ) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
             return;
         };
         self.busy_account = Some(account.id.clone());
@@ -490,7 +490,7 @@ impl AccountsPage {
     // ---- add-account flows ----
 
     fn start_login(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
             return;
         };
         self.login = Some(LoginFlow::Starting { harness });
@@ -558,7 +558,7 @@ impl AccountsPage {
         }
         let login_id = start.login_id.clone();
         *submitting = true;
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
             return;
         };
         let params = self.params(serde_json::json!({ "loginId": login_id, "code": code }));
@@ -596,7 +596,7 @@ impl AccountsPage {
             return;
         };
         let login_id = start.login_id.clone();
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
             return;
         };
         let params = self.params(serde_json::json!({ "loginId": login_id }));
@@ -668,7 +668,7 @@ impl AccountsPage {
         };
         self.login = None;
         self.poll_task = None;
-        if let (Some(login_id), Some(engine)) = (login_id, self.state.read(cx).engine().cloned()) {
+        if let (Some(login_id), Some(engine)) = (login_id, crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok()) {
             let params = self.params(serde_json::json!({ "loginId": login_id }));
             self.action_task = Some(cx.spawn(async move |_, _| {
                 if let Err(err) = engine

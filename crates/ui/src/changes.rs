@@ -55,7 +55,8 @@ use crate::history::{
 use crate::markdown::render;
 use crate::motion::{self, AnimationExt as _, CHEVRON, COLLAPSE};
 use crate::popover::{self, Popup};
-use crate::state::{AppState, EngineHandle};
+use crate::state::AppState;
+use crate::engine_registry::EngineTarget;
 use crate::theme::Theme;
 use roboco_syntax::LanguageId as Lang;
 
@@ -1745,7 +1746,7 @@ impl Changes {
         if self.started && self.watch_target == target {
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             // Engine still booting — retry on the next state change via sync().
             return;
         };
@@ -1761,7 +1762,7 @@ impl Changes {
     }
 
     fn spawn_watch(
-        engine: EngineHandle,
+        engine: EngineTarget,
         target: Option<String>,
         cx: &mut Context<Self>,
     ) -> Task<()> {
@@ -1786,7 +1787,7 @@ impl Changes {
                         while let Some(value) = rx.recv().await {
                             let alive = this.update(cx, |changes, cx| {
                                 changes.error = None;
-                                if apply_diff_frame(&mut changes.diffs, value) {
+                                if apply_diff_frame(&mut changes.diffs, crate::request_routing::scope_checkout_frame(engine.key(), value)) {
                                     changes.sync(cx);
                                     cx.notify();
                                 }
@@ -1885,7 +1886,7 @@ impl Changes {
         if self.branches_for.as_deref() == Some(key.as_str()) {
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         self.branches_for = Some(key.clone());
@@ -1996,7 +1997,7 @@ impl Changes {
             self.scoped = None;
             self.scoped_error = None;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         let mode = self.scope.mode();
@@ -2031,7 +2032,9 @@ impl Changes {
                     serde_json::from_value::<CheckoutDiff>(value)
                         .map_err(|e| roboco_rpc::RpcError::Failed(e.to_string()))
                 }) {
-                    Ok(diff) => {
+                    Ok(mut diff) => {
+                        diff.checkout_id = crate::engine_registry::ScopedId::encode(engine.key(), &diff.checkout_id);
+                        diff.device_id = crate::engine_registry::ScopedId::encode(engine.key(), &diff.device_id);
                         changes.scoped = Some(diff);
                         changes.scoped_error = None;
                     }
@@ -2981,7 +2984,7 @@ impl Changes {
         });
 
         let active = self.active_diff(cx);
-        let engine = self.state.read(cx).engine().cloned();
+        let engine = crate::request_routing::selected_target(self.state.read(cx)).ok();
         let target = self.desired_target(cx);
         let chat_id = self
             .state

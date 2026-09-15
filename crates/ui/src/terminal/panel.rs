@@ -28,7 +28,8 @@ use roboco_rpc::methods;
 
 use crate::motion::{self, AnimationExt as _, TAB_SLIDE};
 use crate::settings::{TERMINAL_MAX_VH, TERMINAL_MIN_HEIGHT};
-use crate::state::{AppState, EngineHandle};
+use crate::state::AppState;
+use crate::engine_registry::EngineTarget;
 use crate::theme::Theme;
 
 use super::emulator::{CellSnapshot, CursorSnapshot, Emulator, GridPoint, SelectionType, Side};
@@ -528,8 +529,8 @@ impl TerminalPanel {
         }
     }
 
-    fn engine(&self, cx: &App) -> Option<EngineHandle> {
-        self.state.read(cx).engine().cloned()
+    fn engine(&self, chat: &str, cx: &App) -> Option<EngineTarget> {
+        self.state.read(cx).target_for_id(chat).ok()
     }
 
     /// The chat's host device when it differs from the connected engine's own —
@@ -574,7 +575,7 @@ impl TerminalPanel {
     // ---- open / stream lifecycle ----
 
     fn open_tab(&mut self, chat: String, cx: &mut Context<Self>) {
-        let Some(engine) = self.engine(cx) else {
+        let Some(engine) = self.engine(&chat, cx) else {
             return;
         };
         self.tab_seq += 1;
@@ -607,7 +608,7 @@ impl TerminalPanel {
     fn spawn_session(
         chat: String,
         key: u64,
-        engine: EngineHandle,
+        engine: EngineTarget,
         target: Option<String>,
         cx: &mut Context<Self>,
     ) -> Task<()> {
@@ -746,7 +747,7 @@ impl TerminalPanel {
         &mut self,
         chat: &str,
         key: u64,
-        engine: &EngineHandle,
+        engine: &EngineTarget,
         event: TerminalEvent,
         cx: &mut Context<Self>,
     ) -> StreamDisposition {
@@ -828,7 +829,7 @@ impl TerminalPanel {
     }
 
     fn flush_input(&mut self, chat: String, key: u64, cx: &mut Context<Self>) {
-        let Some(engine) = self.engine(cx) else {
+        let Some(engine) = self.engine(&chat, cx) else {
             return;
         };
         let target = self.chat_target(&chat, cx);
@@ -930,7 +931,7 @@ impl TerminalPanel {
         }
         tab.emulator.resize(cols, rows);
         let key = tab.key;
-        let engine = self.engine(cx);
+        let engine = self.engine(&chat, cx);
         let target = self.chat_target(&chat, cx);
         if let (Some(engine), Some(tab)) = (engine, self.tab_mut(&chat, key)) {
             let id = tab.terminal_id.clone();
@@ -1331,7 +1332,7 @@ impl TerminalPanel {
     }
 
     fn close_tab(&mut self, chat: &str, key: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let engine = self.engine(cx);
+        let engine = self.engine(&chat, cx);
         let target = self.chat_target(chat, cx);
         let Some(tabs) = self.chats.get_mut(chat) else {
             return;

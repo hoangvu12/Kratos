@@ -49,7 +49,8 @@ use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::motion;
 use crate::popover::{self, Loadable, MenuKey};
 use crate::settings::composer::ComposerDefaults;
-use crate::state::{AppState, EngineHandle};
+use crate::state::AppState;
+use crate::engine_registry::EngineTarget;
 use crate::theme::Theme;
 
 /// Dev/testing knob: `ROBOCO_SLOW_CATALOG_MS=<ms>` delays every harness and
@@ -693,8 +694,8 @@ impl Pickers {
         self.state.read(cx).selected_chat.is_some()
     }
 
-    fn engine(&self, cx: &App) -> Option<EngineHandle> {
-        self.state.read(cx).engine().cloned()
+    fn engine(&self, cx: &App) -> Option<EngineTarget> {
+        crate::request_routing::selected_target(self.state.read(cx)).ok()
     }
 
     /// The selected target device when it differs from the connected

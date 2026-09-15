@@ -2106,7 +2106,7 @@ impl GitHistory {
         let Some((key, cwd, target)) = self.context(cx) else {
             return;
         };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         self.fetching_all = true;
@@ -2465,7 +2465,7 @@ impl GitHistory {
         let Some((key, cwd, target)) = self.context(cx) else {
             return;
         };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         let generation = self.search_generation;
@@ -2586,7 +2586,7 @@ impl GitHistory {
         if authors.is_empty() {
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         let mut params = serde_json::Map::new();
@@ -2650,7 +2650,7 @@ impl GitHistory {
         if self.loading {
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         self.loading = true;

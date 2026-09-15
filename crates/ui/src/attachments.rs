@@ -23,7 +23,7 @@ use gpui::{
     AnyElement, BackgroundExecutor, Image, ImageFormat, SharedString, Size, div, prelude::*, px,
 };
 
-use crate::state::EngineHandle;
+use crate::engine_registry::EngineTarget;
 use crate::theme::ink;
 use roboco_rpc::methods;
 
@@ -296,7 +296,7 @@ const READ_CHUNK_TIMEOUT: Duration = Duration::from_secs(20);
 /// Race an RPC against `timeout` on the gpui background executor (these
 /// futures run under `cx.spawn`, so tokio's timer reactor isn't available).
 pub(crate) async fn call_with_timeout(
-    engine: &EngineHandle,
+    engine: &EngineTarget,
     executor: &BackgroundExecutor,
     method: &str,
     params: serde_json::Value,
@@ -353,7 +353,7 @@ fn chunk_ranges(b64_len: usize) -> Vec<(u64, std::ops::Range<usize>)> {
 /// composer's "Uploading… N%" reads it every paint. Errors return the raw
 /// cause (the composer shows friendly copy).
 pub async fn upload_attachment(
-    engine: &EngineHandle,
+    engine: &EngineTarget,
     executor: &BackgroundExecutor,
     target_device_id: Option<&str>,
     upload_id: &str,
@@ -465,7 +465,7 @@ pub struct LoadedAttachmentImage {
 /// `ReadAttachmentChunk` loop: 45KB base64 chunks until `done` (bounded, with
 /// the same stuck-offset guard as roboco's `readAttachmentImage`).
 pub async fn read_attachment_image(
-    engine: &EngineHandle,
+    engine: &EngineTarget,
     executor: &BackgroundExecutor,
     target_device_id: Option<&str>,
     path: &str,

@@ -1150,7 +1150,7 @@ impl FilesSurface {
         let Some(context) = self.request_context.clone() else {
             return;
         };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = self.state.read(cx).target_for_id(&self.chat_id).ok() else {
             if let Some(document) = self.preview.documents.get_mut(&path) {
                 document.phase =
                     DocumentPhase::Error("Workspace service is still starting.".into());
@@ -1232,7 +1232,7 @@ impl FilesSurface {
         let Some(context) = self.request_context.clone() else {
             return;
         };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = self.state.read(cx).target_for_id(&self.chat_id).ok() else {
             if let Some(document) = self.preview.documents.get_mut(&path) {
                 document.set_error("Workspace service is still starting.");
             }
@@ -1512,7 +1512,7 @@ impl FilesSurface {
         let Some(context) = self.request_context.clone() else {
             return;
         };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = self.state.read(cx).target_for_id(&self.chat_id).ok() else {
             if let Some(document) = self.preview.documents.get_mut(&path) {
                 document.autosave_task = None;
                 document.phase =
@@ -1728,7 +1728,7 @@ impl FilesSurface {
         let Some(context) = self.request_context.clone() else {
             return;
         };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = self.state.read(cx).target_for_id(&self.chat_id).ok() else {
             return;
         };
         let Some(document) = self.preview.documents.get_mut(&path) else {
@@ -2571,7 +2571,7 @@ impl FilesSurface {
         let media_client = self
             .request_context
             .clone()
-            .zip(self.state.read(cx).engine().cloned())
+            .zip(self.state.read(cx).target_for_id(&self.chat_id).ok())
             .map(|(context, engine)| {
                 (
                     WorkspaceFilesClient::new(engine, context),

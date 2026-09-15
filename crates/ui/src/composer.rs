@@ -5061,7 +5061,7 @@ impl Composer {
             cx.notify();
             return;
         };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             self.mention.loading = false;
             cx.notify();
             return;
@@ -5385,7 +5385,7 @@ impl Composer {
         self.slash.request = self.slash.request.wrapping_add(1);
         self.slash.loading = true;
         self.refilter_slash(cx);
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             self.slash.loading = false;
             return;
         };
@@ -6025,7 +6025,7 @@ impl Composer {
     /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /
     /// reasoning / options on the Run request itself (§1.7).
     fn send(&mut self, text: String, queue: bool, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             self.failure = Some("Engine not connected".into());
             self.failure_key = None; // global — meaningful on every chat
             cx.notify();
@@ -6035,7 +6035,7 @@ impl Composer {
         // (the chat then appears from the doc host once the doc materializes).
         let (chat_id, is_new) = match self.state.read(cx).selected_chat.clone() {
             Some(id) => (id, false),
-            None => (uuid::Uuid::new_v4().to_string(), true),
+            None => (crate::engine_registry::ScopedId::encode(engine.key(), &uuid::Uuid::new_v4().to_string()), true),
         };
         // Where the new session runs (Current checkout / reuse an existing
         // worktree / fresh worktree off the picked base) — resolved NOW so
@@ -6490,11 +6490,11 @@ impl Composer {
                     }
                 }
 
-                // Best-effort Mutate createChat with the picked config: the
+                // Create on the captured engine with the picked config: the
                 // engine resolves device + cwd from the PROJECT row when one
                 // is picked; project-less chats name the host device outright
                 // (idempotent; the doc host would materialize the chat on
-                // first command anyway, so failures are non-fatal).
+                // first command only after creation succeeds).
                 if is_new {
                     let mut mutate = serde_json::json!({
                         "op": "createChat",
@@ -6544,7 +6544,7 @@ impl Composer {
                     )
                     .await
                     {
-                        tracing::warn!(error = %err, "CreateChat mutate unavailable; doc host will materialize the chat");
+                        return Err(format!("Could not create the chat on its engine: {err}"));
                     }
                 }
 
@@ -6717,7 +6717,7 @@ impl Composer {
     }
 
     pub(crate) fn interrupt_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         if !begin_interrupt(&mut self.interrupting, &chat_id) {
@@ -6815,7 +6815,7 @@ impl Composer {
             input.set_placeholder("Do anything…", cx);
             input.set_key_context(MESSAGE_COMPOSER_CONTEXT, cx);
         });
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
