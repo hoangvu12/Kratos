@@ -1,11 +1,7 @@
 //! `roboco daemon …` — install/manage `roboco headless` as a background service:
 //! a systemd **user** unit on Linux (the VPS deployment target), a launchd
 //! LaunchAgent on macOS. The unit runs the current executable with the
-//! `ROBOCO_*` environment captured at install time, so
-//! `ROBOCO_EDGE_URL=… roboco daemon install` bakes that override in.
-//!
-//! Auth is decoupled: without a saved session the service remains up on the
-//! local-only profile. `roboco login` and a service restart opt into sync.
+//! `ROBOCO_*` environment captured at install time. The service starts a local engine.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,7 +20,6 @@ const CAPTURED_ENV: &[&str] = &[
     "PATH",
     "ROBOCO_DATA_DIR",
     "ROBOCO_IPC_PORT",
-    "ROBOCO_CALLBACK_PORT",
     "ROBOCO_HARNESS",
     "ROBOCO_DEVICE_NAME",
     "RUST_LOG",
@@ -64,9 +59,6 @@ pub fn install(data_dir: &Path) -> anyhow::Result<()> {
     } else {
         bail!("roboco daemon is only supported on macOS (launchd) and Linux (systemd)");
     }
-    println!(
-        "Without a saved account the engine stays local-only; sign-in and restart are optional for sync."
-    );
     println!(
         "Logs: {}",
         if cfg!(target_os = "macos") {

@@ -418,7 +418,7 @@ impl EngineHandle {
 }
 
 /// Query the current protocol first, with a conservative fallback for daemons
-/// from before `EngineInfo` existed. Old daemons are always treated as synced.
+/// from before `EngineInfo` existed, using their local device identity.
 async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
     match client
         .call_as(methods::ENGINE_INFO, serde_json::json!({}))
@@ -436,7 +436,7 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
                 .await?;
             Ok(EngineInfo {
                 device_id: legacy.device_id,
-                workspace_scope: WorkspaceScope::Synced,
+                workspace_scope: WorkspaceScope::Local,
                 capabilities: Vec::new(),
             })
         }
@@ -2643,53 +2643,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn engine_info_is_available_while_cloud_onboarding_is_deferred() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("session.json"),
-            r#"{"refreshToken":"saved","user":{"id":"user_1","email":"u@example.com"}}"#,
-        )
-        .unwrap();
-        let handle = EngineHandle::bootstrap(EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: free_port().await,
-
-            default_harness: HarnessId::Mock,
-        })
-        .await
-        .unwrap();
-
-        assert!(matches!(
-            handle
-                .deferred_state()
-                .expect("embedded lifecycle")
-                .borrow()
-                .clone(),
-            DeferredEngineState::Waiting
-        ));
-
-        let info: EngineInfo = handle
-            .client()
-            .call_as(methods::ENGINE_INFO, serde_json::json!({}))
-            .await
-            .expect("EngineInfo bypasses deferred cloud stores");
-        assert_eq!(info.workspace_scope, WorkspaceScope::Synced);
-        assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                handle
-                    .client()
-                    .call(methods::LIST_HARNESSES, serde_json::json!({})),
-            )
-            .await
-            .is_err(),
-            "cloud data waits for organization onboarding"
-        );
-        assert!(!dir.path().join("orgs").exists());
-        handle.shutdown().await;
-    }
-
-    #[tokio::test]
     async fn bootstrap_connects_when_daemon_is_listening() {
         // Stand in for `roboco headless`: an engine served over the WS IPC port.
         let daemon_dir = tempfile::tempdir().unwrap();
@@ -2719,10 +2672,7 @@ mod tests {
                 url: format!("ws://127.0.0.1:{port}")
             }
         );
-        assert_eq!(
-            handle.engine_info().workspace_scope,
-            WorkspaceScope::Development
-        );
+        assert_eq!(handle.engine_info().workspace_scope, WorkspaceScope::Local);
         let harnesses = handle
             .client()
             .call(methods::LIST_HARNESSES, serde_json::json!({}))

@@ -1483,7 +1483,6 @@ impl Shell {
             update_dismissed: None,
             install: roboco_update::detect_install(),
             mutate_task: None,
-            import_task: None,
             import_current: None,
             boot,
             data_dir,
@@ -4193,7 +4192,7 @@ impl Shell {
 
     /// Roboco-drawn Linux caption controls, one overlay per populated side.
     /// Shell-level chrome like the Windows cluster: mounted at the root so
-    /// they stay above the splash and every auth/org/error gate.
+    /// they stay above the splash and the engine error gate.
     fn render_linux_caption_controls(&self, window: &Window, cx: &App) -> Vec<AnyElement> {
         let Some(layout) = self.linux_captions else {
             return Vec::new();
@@ -5300,8 +5299,7 @@ impl Shell {
         // Modals and context menus sit above the rest of the shell. Preserve
         // their existing behavior: only surfaces that already have a Cancel
         // path close here; the others remain explicit blockers.
-        if self.sync_flow.has_visible_overlay()
-            || self.delete_confirm.is_some()
+        if self.delete_confirm.is_some()
             || self.delete_space_confirm.is_some()
             || self.chat_menu.get().is_some()
             || self.space_menu.get().is_some()
@@ -7250,7 +7248,7 @@ impl Shell {
     }
 }
 
-/// The sign-in gate's faint grid backdrop (roboco styles.css `.bg-grid`):
+/// The engine error screen's faint grid backdrop (roboco styles.css `.bg-grid`):
 /// 44px hairlines at white 3.5%, with the radial mask approximated by edge
 /// gradients back into the page background (gpui has no mask-image).
 fn grid_backdrop(theme: &Theme) -> AnyElement {
@@ -8074,7 +8072,7 @@ impl Render for Shell {
         };
 
         // Caption controls are shell-level chrome, not Ready-page content:
-        // keep them above the splash and every auth/org/error gate as well as
+        // keep them above the splash and the engine error gate as well as
         // the full application. Gate pages also need a drag surface because
         // they do not render the unified tabs/settings titlebar — on Windows
         // the native `Drag` control area, on Linux the explicit

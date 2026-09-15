@@ -97,6 +97,19 @@ fn decode_component(value: &str) -> Result<String, &'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_locator_is_stable_and_device_scoped() {
+        assert_eq!(super::workspace_locator(None), None);
+        assert_eq!(
+            super::workspace_locator(Some("device-a")),
+            super::workspace_locator(Some("device-a"))
+        );
+        assert_ne!(
+            super::workspace_locator(Some("device-a")),
+            super::workspace_locator(Some("device-b"))
+        );
+    }
+
     use super::*;
 
     fn harness_chat(harness: HarnessId) -> Chat {
