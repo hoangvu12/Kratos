@@ -1,5 +1,5 @@
 [package]
-name = "zeron-ui"
+name = "roboco-ui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -33,15 +33,15 @@ required-features = ["appshots-fixture"]
 
 [dependencies]
 url = "2"
-zeron-proto.workspace = true
+roboco-proto.workspace = true
 similar.workspace = true
-zeron-doc.workspace = true
-zeron-engine.workspace = true
-zeron-harness.workspace = true
-zeron-rpc.workspace = true
-zeron-update.workspace = true
-zeron-syntax.workspace = true
-zeron-theme.workspace = true
+roboco-doc.workspace = true
+roboco-engine.workspace = true
+roboco-harness.workspace = true
+roboco-rpc.workspace = true
+roboco-update.workspace = true
+roboco-syntax.workspace = true
+roboco-theme.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui_tokio.workspace = true

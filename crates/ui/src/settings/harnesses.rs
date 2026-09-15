@@ -24,11 +24,11 @@ use gpui::{
     px,
 };
 
-use zeron_engine::registry::TitleSettings;
-use zeron_engine::registry::{HarnessDescriptor, descriptor_enabled};
-use zeron_proto::HarnessId;
-use zeron_proto::Model;
-use zeron_rpc::methods;
+use roboco_engine::registry::TitleSettings;
+use roboco_engine::registry::{HarnessDescriptor, descriptor_enabled};
+use roboco_proto::HarnessId;
+use roboco_proto::Model;
+use roboco_rpc::methods;
 
 use crate::pickers::visible_harnesses;
 use crate::popover::{self, Loadable};
@@ -343,7 +343,7 @@ impl HarnessesPage {
                             .filter(|h| {
                                 descriptor_enabled(h)
                                     && h.installed
-                                    && zeron_harness::supports_titles(h.id)
+                                    && roboco_harness::supports_titles(h.id)
                                     && h.id != HarnessId::Mock
                             })
                             .map(|h| {

@@ -389,7 +389,7 @@ fn apply_remote_row(shared: &Mutex<Shared>, sink: &dyn ChatDocSink, bytes: &[u8]
     }
 }
 
-/// `zeron sync` surface (plan: cursor / headSeq / floorLag / pendingPushes).
+/// `roboco sync` surface (plan: cursor / headSeq / floorLag / pendingPushes).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ChatStatsSnapshot {
     pub connected: bool,

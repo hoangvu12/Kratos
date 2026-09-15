@@ -12,7 +12,7 @@ members = [
     "crates/update",
     "crates/ui",
     "crates/syntax",
-    "apps/zeron",
+    "apps/roboco",
 ]
 
 [workspace.package]
@@ -22,17 +22,17 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-zeron-proto = { path = "crates/proto" }
-zeron-preview = { path = "crates/preview" }
-zeron-doc = { path = "crates/doc" }
-zeron-sync = { path = "crates/sync" }
-zeron-harness = { path = "crates/harness" }
-zeron-engine = { path = "crates/engine" }
-zeron-rpc = { path = "crates/rpc" }
-zeron-update = { path = "crates/update" }
-zeron-ui = { path = "crates/ui" }
-zeron-syntax = { path = "crates/syntax" }
-zeron-theme = { path = "crates/theme" }
+roboco-proto = { path = "crates/proto" }
+roboco-preview = { path = "crates/preview" }
+roboco-doc = { path = "crates/doc" }
+roboco-sync = { path = "crates/sync" }
+roboco-harness = { path = "crates/harness" }
+roboco-engine = { path = "crates/engine" }
+roboco-rpc = { path = "crates/rpc" }
+roboco-update = { path = "crates/update" }
+roboco-ui = { path = "crates/ui" }
+roboco-syntax = { path = "crates/syntax" }
+roboco-theme = { path = "crates/theme" }
 
 # CRDT
 loro = "1.13"
