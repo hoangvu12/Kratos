@@ -1154,8 +1154,6 @@ pub struct Shell {
     /// Cached: `detect_install` stats `current_exe` and this renders per frame.
     install: roboco_update::InstallKind,
     mutate_task: Option<Task<()>>,
-    /// Title of the chat the import stream is copying right now.
-    import_current: Option<SharedString>,
     /// Kept for the failed-gate "Retry" action.
     boot: EngineBootConfig,
     data_dir: PathBuf,
@@ -1481,7 +1479,6 @@ impl Shell {
             update_dismissed: None,
             install: roboco_update::detect_install(),
             mutate_task: None,
-            import_current: None,
             boot,
             data_dir,
             settings,

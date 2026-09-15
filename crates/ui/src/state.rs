@@ -1832,7 +1832,7 @@ impl AppState {
     }
 }
 
-/// Observe assembly after an early attach (cloud onboarding or another viewport
+/// Observe assembly after an early attach (another viewport
 /// reaching the embedded engine over IPC). Data subscriptions wait on the same
 /// result, but their individual errors are not authoritative: older engines may
 /// legitimately omit a watch method. Only the assembly result may fail the
