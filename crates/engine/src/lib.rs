@@ -22,6 +22,7 @@ pub mod doc_host;
 pub mod instance_lock;
 pub mod listener;
 pub mod pairing;
+pub mod remote_access;
 pub mod profile;
 pub mod registry;
 pub mod repos;
@@ -106,6 +107,7 @@ pub struct EngineConfig {
 /// The assembled engine core — also constructible without the IPC server for tests
 /// and the in-process (headed) mode.
 pub struct EngineCore {
+    pub remote_access: Arc<remote_access::RemoteAccessController>,
     pub sessions: SessionsEngine,
     pub doc_host: DocHost,
     pub workspace: WorkspaceHost,
@@ -248,6 +250,7 @@ impl EngineCore {
         }));
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
         Ok(Self {
+            remote_access: remote_access::RemoteAccessController::new(data_dir),
             sessions,
             doc_host,
             workspace,
@@ -301,7 +304,8 @@ impl EngineCore {
             self.agent_accounts.clone(),
             self.workspace_scope,
         )
-        .with_previews(self.previews.clone());
+        .with_previews(self.previews.clone())
+        .with_remote_access(Arc::downgrade(&self.remote_access));
         if let Some(updater) = self.updater() {
             rpc = rpc.with_updater(updater);
         }
@@ -312,6 +316,7 @@ impl EngineCore {
     /// kill live PTYs, stamp our workspace `lastSeenAt`, and flush every open doc
     /// snapshot.
     pub async fn shutdown(&self) {
+        self.remote_access.shutdown().await;
         self.previews.shutdown().await;
         // A run interruption transitions its chat to Idle, and Idle normally
         // releases the next queued row. Freeze first so quitting never starts
@@ -343,6 +348,7 @@ impl EngineCore {
 
 pub struct Engine {
     pub config: EngineConfig,
+    network: remote_access::NetworkOptions,
 }
 
 /// An assembled local engine, shared by headed and headless operation.
@@ -392,7 +398,12 @@ impl EngineRuntime {
 
 impl Engine {
     pub fn new(config: EngineConfig) -> Self {
-        Self { config }
+        Self { config, network: Default::default() }
+    }
+
+    pub fn with_network(mut self, options: remote_access::NetworkOptions) -> Self {
+        self.network = options;
+        self
     }
 
     /// Resolve local storage.
@@ -418,7 +429,7 @@ impl Engine {
         config: &EngineConfig,
         profile: EngineProfile,
     ) -> anyhow::Result<EngineRuntime> {
-        Self::assemble_runtime_inner(config, profile, None).await
+        Self::assemble_runtime_inner(config, profile, None, Default::default()).await
     }
 
     /// Like [`Self::assemble_runtime`], but against an [`InstanceLock`] the
@@ -429,13 +440,14 @@ impl Engine {
         profile: EngineProfile,
         lock: InstanceLock,
     ) -> anyhow::Result<EngineRuntime> {
-        Self::assemble_runtime_inner(config, profile, Some(lock)).await
+        Self::assemble_runtime_inner(config, profile, Some(lock), Default::default()).await
     }
 
     async fn assemble_runtime_inner(
         config: &EngineConfig,
         profile: EngineProfile,
         lock: Option<InstanceLock>,
+        network: remote_access::NetworkOptions,
     ) -> anyhow::Result<EngineRuntime> {
         let core = match lock {
             Some(lock) => EngineCore::assemble_with_profile_locked(
@@ -488,6 +500,7 @@ impl Engine {
         // whose CLI is present but whose adapter isn't yet), so a first chat
         // never waits on — or dies inside — an npm run.
         roboco_harness::acp::prewarm_managed_adapters();
+        core.remote_access.initialize(core.rpc_service(), network).await;
 
         Ok(EngineRuntime { core })
     }
@@ -499,7 +512,7 @@ impl Engine {
 
         std::fs::create_dir_all(&config.data_dir)?;
         let profile = Self::resolve_profile(&config)?;
-        let runtime = Self::assemble_runtime(&config, profile).await?;
+        let runtime = Self::assemble_runtime_inner(&config, profile, None, self.network).await?;
 
         // A daemon exists to serve this port, so a bind failure is fatal here —
         // unlike the headed app, which can still work over its in-process
@@ -510,6 +523,12 @@ impl Engine {
             stop_tx,
         });
         let server = serve_engine_ipc(config.ipc_port, service, &config.data_dir).await?;
+        if runtime.core().remote_access.snapshot().await?["status"]["enabled"] == true {
+            match runtime.core().remote_access.create_link().await {
+                Ok(link) => println!("Pairing URL: {}", link["url"].as_str().unwrap_or_default()),
+                Err(error) => tracing::warn!(%error, "pairing URL unavailable; configure --pairing-base-url"),
+            }
+        }
 
         tokio::select! {
             result = shutdown_signal() => result?,
@@ -585,6 +604,14 @@ pub async fn serve_engine_ipc(
 pub struct EngineListener {
     pub address: std::net::SocketAddr,
     task: tokio::task::JoinHandle<()>,
+}
+
+impl EngineListener {
+    /// Wait until the bind and accepted connections have been released.
+    pub async fn stop(&mut self) {
+        self.task.abort();
+        let _ = (&mut self.task).await;
+    }
 }
 
 impl Drop for EngineListener {

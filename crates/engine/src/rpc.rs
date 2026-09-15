@@ -453,6 +453,7 @@ enum MutateParams {
 }
 
 pub struct EngineRpc {
+    remote_access: std::sync::Weak<crate::remote_access::RemoteAccessController>,
     sessions: SessionsEngine,
     doc_host: DocHost,
     workspace: WorkspaceHost,
@@ -491,6 +492,7 @@ impl EngineRpc {
             capabilities: roboco_proto::capabilities::current(),
         };
         Self {
+            remote_access: Default::default(),
             sessions,
             doc_host,
             workspace,
@@ -510,6 +512,11 @@ impl EngineRpc {
 
     pub fn with_previews(mut self, previews: roboco_preview::PreviewService) -> Self {
         self.previews = Some(previews);
+        self
+    }
+
+    pub fn with_remote_access(mut self, controller: std::sync::Weak<crate::remote_access::RemoteAccessController>) -> Self {
+        self.remote_access = controller;
         self
     }
 
@@ -840,6 +847,23 @@ impl RpcService for EngineRpc {
             )));
         }
         match method {
+            methods::GET_REMOTE_ACCESS | methods::SET_REMOTE_ACCESS | methods::CREATE_PAIRING_LINK | methods::REVOKE_PAIRING_SESSION => {
+                let controller = self.remote_access.upgrade().ok_or_else(|| RpcError::Failed("remote access unavailable".into()))?;
+                let result = match method {
+                    methods::SET_REMOTE_ACCESS => {
+                        let enabled = params.get("enabled").and_then(|value| value.as_bool()).ok_or_else(|| RpcError::BadParams("enabled must be a boolean".into()))?;
+                        controller.set_enabled(enabled).await
+                    }
+                    methods::CREATE_PAIRING_LINK => controller.create_link().await,
+                    methods::REVOKE_PAIRING_SESSION => {
+                        let id = params.get("sessionId").and_then(|value| value.as_str()).ok_or_else(|| RpcError::BadParams("sessionId is required".into()))?;
+                        controller.revoke(id).map_err(|error| RpcError::Failed(error.to_string()))?;
+                        controller.snapshot().await
+                    }
+                    _ => controller.snapshot().await,
+                };
+                RpcReply::value(&result.map_err(|error| RpcError::Failed(error.to_string()))?)
+            }
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),

@@ -35,7 +35,17 @@ enum Command {
         command: pairing_cli::EngineCommand,
     },
     /// Run the local engine without a UI.
-    Headless,
+    Headless {
+        /// Allow remote clients. Conflicting saved settings keep the engine local.
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        network: Option<bool>,
+        /// Remote bind address (default 0.0.0.0:27655).
+        #[arg(long)]
+        network_address: Option<std::net::SocketAddr>,
+        /// URL clients use through a tunnel, or an explicit LAN address.
+        #[arg(long)]
+        pairing_base_url: Option<String>,
+    },
     /// Show the local engine status.
     Status,
     #[cfg(target_os = "linux")]
@@ -94,7 +104,7 @@ fn main() -> anyhow::Result<()> {
     // journald on every snapshot export — enough to fill a disk on a
     // long-running headless host. Quiet them by default (RUST_LOG still
     // overrides the whole filter).
-    let long_running = matches!(&cli.command, None | Some(Command::Headless));
+    let long_running = matches!(&cli.command, None | Some(Command::Headless { .. }));
     let default_filter = if long_running {
         "info,loro_internal=warn,loro=warn"
     } else {
@@ -149,10 +159,11 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Some(Command::Engine { command }) => pairing_cli::run(command, &paths::data_dir()),
-        Some(Command::Headless) => {
+        Some(Command::Headless { network, network_address, pairing_base_url }) => {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(async {
-                let engine = roboco_engine::Engine::new(engine_config_from_env());
+                let engine = roboco_engine::Engine::new(engine_config_from_env()).with_network(
+                    roboco_engine::remote_access::NetworkOptions::from_environment(network, network_address, pairing_base_url));
                 engine.run().await
             })
         }

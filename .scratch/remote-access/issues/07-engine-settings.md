@@ -4,11 +4,28 @@
 
 **Blocked by:** 06 — Authenticated remote listener.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Parent:** `.scratch/remote-access/spec.md`
 
-- [ ] Flipping the toggle or flag changes whether the remote bind exists, without restart surprises
-- [ ] Settings lists sessions and revocation takes effect from the UI
-- [ ] A headless engine start prints a usable pairing URL (credential in fragment)
-- [ ] Flag/file disagreement resolves safely (loopback-only) and is logged
+- [x] Flipping the toggle or flag changes whether the remote bind exists, without restart surprises
+- [x] Settings lists sessions and revocation takes effect from the UI
+- [x] A headless engine start prints a usable pairing URL (credential in fragment)
+- [x] Flag/file disagreement resolves safely (loopback-only) and is logged
+
+## Implementation and validation
+
+Remote access Settings controls the live listener, creates/copies pairing links,
+and lists/revokes sessions through engine RPCs. Saved settings, headless
+`--network`/`ROBOCO_NETWORK`, custom bind addresses, and public tunnel URLs are
+documented in `docs/reference/remote-access.md`. Conflicting or invalid settings
+fail closed and log their source. Wildcard binds advertise a LAN address.
+
+Passed on Windows:
+- `cargo check --locked -p roboco`.
+- `cargo test --locked -p roboco-engine --test remote_settings`: two real-listener
+  tests, including toggle/rebind, pairing/revoke, self-disabling remote callers,
+  malformed settings, and flag/file conflicts.
+- `cargo test --locked -p roboco --test remote_startup`: actual headless process
+  prints a URL that redeems and opens authenticated engine RPC.
+- `git diff --check`.

@@ -383,6 +383,7 @@ pub fn apply_keymap(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     Devices,
+    RemoteAccess,
     /// Which harnesses the composer offers (enable/disable toggles).
     Harnesses,
     /// Per-provider CLI accounts (login, usage) — labeled "Accounts".
@@ -396,8 +397,9 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 9] = [
+    pub const ALL: [SettingsSection; 10] = [
         SettingsSection::Devices,
+        SettingsSection::RemoteAccess,
         SettingsSection::Harnesses,
         SettingsSection::Agents,
         SettingsSection::Appearance,
@@ -413,6 +415,7 @@ impl SettingsSection {
     pub fn label(self) -> &'static str {
         match self {
             SettingsSection::Devices => "Devices",
+            SettingsSection::RemoteAccess => "Remote access",
             SettingsSection::Harnesses => "Agents",
             SettingsSection::Agents => "Accounts",
             SettingsSection::Appearance => "Appearance",
@@ -1094,6 +1097,7 @@ pub struct Shell {
     /// Route history behind the titlebar back/forward buttons (§ nav history).
     nav: NavHistory,
     devices_page: Option<Entity<DevicesPage>>,
+    remote_access_page: Option<Entity<crate::settings::remote_access::RemoteAccessPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
     appearance_page: Option<Entity<AppearancePage>>,
     files_settings_page: Option<Entity<FilesSettingsPage>>,
@@ -1446,6 +1450,7 @@ impl Shell {
             route,
             nav,
             devices_page: None,
+            remote_access_page: None,
             archived_page: None,
             appearance_page: None,
             files_settings_page: None,
@@ -3315,6 +3320,13 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match section {
+            SettingsSection::RemoteAccess => {
+                if self.remote_access_page.is_none() {
+                    let state = self.state.clone();
+                    self.remote_access_page = Some(cx.new(|cx| crate::settings::remote_access::RemoteAccessPage::new(state, cx)));
+                }
+                self.remote_access_page.as_ref().unwrap().clone().into_any_element()
+            }
             SettingsSection::Devices => {
                 if self.devices_page.is_none() {
                     let state = self.state.clone();
@@ -4283,6 +4295,7 @@ impl Shell {
     ) -> AnyElement {
         let section_icon = |item: SettingsSection| match item {
             SettingsSection::Devices => icons::MONITOR,
+            SettingsSection::RemoteAccess => icons::KEY_MINIMALISTIC,
             SettingsSection::Harnesses => icons::WIDGET,
             SettingsSection::Agents => icons::KEY_MINIMALISTIC,
             SettingsSection::Appearance => icons::TUNING,
