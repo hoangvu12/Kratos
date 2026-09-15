@@ -1,5 +1,19 @@
 # Domain context
 
+## Remote access
+
+**Engine**:
+The per-device process that owns sessions, transcripts, and agent harnesses, and serves them to clients over a WebSocket. One engine per machine.
+_Avoid_: Environment, server, backend, daemon (when it means the engine generally)
+
+**Pairing**:
+The one-time act of registering a client with an engine by redeeming a short-lived pair code or pairing URL. After pairing, the client holds a session and never pairs again.
+_Avoid_: Login, sign-in, connecting (when it means pairing)
+
+**Session**:
+The credential a paired client holds for an engine. Does not expire; lives until revoked.
+_Avoid_: Token (when a human-facing word is wanted), login
+
 ## Theme vocabulary
 
 - **Theme family** — A named collection of related theme variants that share an origin, such as Night Owl and Night Owl Light.
