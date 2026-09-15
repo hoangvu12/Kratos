@@ -13,7 +13,7 @@ use std::process::Command;
 use anyhow::{Context, bail};
 
 const LAUNCHD_LABEL: &str = "sh.roboco.app";
-/// Same unit name the curl|sh installer (`edge/src/install.sh`) writes, so
+/// Stable unit name used by existing installations, so
 /// `roboco daemon …` manages that installation rather than a competing copy.
 const SYSTEMD_UNIT: &str = "roboco.service";
 
@@ -399,18 +399,6 @@ mod tests {
         assert!(!unit.contains("ConditionPathExists"));
         assert!(unit.contains("EnvironmentFile=-%h/.roboco/env"));
         assert!(unit.contains("WantedBy=default.target"));
-    }
-
-    #[test]
-    fn curl_installer_always_starts_the_local_capable_service() {
-        // Git for Windows can check out this source fixture with CRLF. These
-        // assertions cover the installer directives, not checkout line endings.
-        let installer = include_str!("../../../edge/src/install.sh").replace("\r\n", "\n");
-        assert!(!installer.contains("session.json"));
-        assert!(installer.contains("StartLimitIntervalSec=60\n"));
-        assert!(installer.contains("StartLimitBurst=5\n"));
-        assert!(installer.contains("systemctl --user enable roboco"));
-        assert!(installer.contains("systemctl --user restart roboco"));
     }
 
     #[test]
