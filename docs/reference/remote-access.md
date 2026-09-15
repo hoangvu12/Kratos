@@ -2,7 +2,7 @@
 
 Every engine keeps its local client connection. Remote access is off by default.
 Enable **Settings → Remote access → Allow remote connections**, create a pairing
-link, and paste it into another client's engine list. Links expire after five
+link, and paste it into **Settings → Devices** on another client. Links expire after five
 minutes and work once. Paired sessions remain valid until revoked from Settings
 or the CLI. Disabling remote access closes the remote listener and its connections.
 
@@ -64,3 +64,21 @@ next startup or Settings change. Invalid files keep remote access off.
 The engine serves plain HTTP/WebSocket on trusted networks. For internet access,
 use your own TLS tunnel. Pairing links carry the code in a URL fragment; the
 native client submits it in the Authorization header, never in a request URL.
+
+## Using several engines
+
+Paired engines reconnect automatically when the desktop starts. Their chats and
+spaces appear in the existing sidebar with device labels. Pick a device in the
+space palette, then choose a folder; the composer space chip identifies where the
+new chat will run. You can also enter an absolute path for that engine. An existing
+folder opens on Enter; a missing folder offers **Create and add**.
+
+Settings → Devices shows connection state and lets you forget a paired engine.
+Forgetting removes its saved connection and client cache. Revoke the session on
+the engine when you also want to invalidate its credential.
+
+When an engine is unreachable, cached chat lists and previously opened transcripts
+remain readable. A compact strip marks the offline view, and sending is refused.
+The client retries with capped backoff and restores live updates after reconnecting.
+Each engine owns its files, terminals, queue and history; pairing does not copy
+engine data between machines.
