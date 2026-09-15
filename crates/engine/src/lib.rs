@@ -823,7 +823,10 @@ impl DeviceIdentityLock {
                 match options.open(&path) {
                     Ok(file) => break file,
                     Err(err)
-                        if err.kind() == std::io::ErrorKind::PermissionDenied && retries > 0 =>
+                        if (err.raw_os_error()
+                            == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+                            || err.kind() == std::io::ErrorKind::PermissionDenied)
+                            && retries > 0 =>
                     {
                         retries -= 1;
                         std::thread::sleep(std::time::Duration::from_millis(5));
