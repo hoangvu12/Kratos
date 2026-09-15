@@ -1,4 +1,5 @@
 //! Remote exposure is explicit. Conflicting or invalid configuration stays local.
+use roboco_proto::{PairedSession, PairingLink, RemoteAccessSnapshot, RemoteAccessStatus};
 use serde::{Deserialize, Serialize};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -15,9 +16,7 @@ pub struct RemoteAccessSettings {
     pub enabled: bool,
     pub bind_address: SocketAddr,
     pub public_url: Option<String>,
-}
-
-impl Default for RemoteAccessSettings {
+}impl Default for RemoteAccessSettings {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -106,16 +105,6 @@ pub fn save(directory: &Path, settings: &RemoteAccessSettings) -> anyhow::Result
         return Err(error.into());
     }
     Ok(())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteAccessStatus {
-    pub enabled: bool,
-    pub configured_enabled: bool,
-    pub address: Option<SocketAddr>,
-    pub source: String,
-    pub error: Option<String>,
 }
 
 pub fn resolve(loaded: &LoadedSettings, options: &NetworkOptions) -> RemoteAccessStatus {
@@ -244,8 +233,12 @@ impl RemoteAccessController {
 
     pub async fn snapshot(&self) -> anyhow::Result<serde_json::Value> {
         let status = self.state.lock().await.status.clone();
-        let sessions = crate::pairing::PairingStore::open(&self.directory)?.list_sessions()?;
-        Ok(serde_json::json!({"status": status, "sessions": sessions}))
+        let sessions: Vec<PairedSession> =
+            crate::pairing::PairingStore::open(&self.directory)?.list_sessions()?;
+        Ok(serde_json::to_value(RemoteAccessSnapshot {
+            status,
+            sessions,
+        })?)
     }
 
     pub async fn set_enabled(&self, enabled: bool) -> anyhow::Result<serde_json::Value> {
@@ -280,9 +273,10 @@ impl RemoteAccessController {
         crate::pairing::pairing_url(&base, "")?;
         let code = crate::pairing::PairingStore::open(&self.directory)?
             .create_code("", crate::pairing::DEFAULT_TTL_SECONDS)?;
-        Ok(
-            serde_json::json!({"url": crate::pairing::pairing_url(&base, &code.credential)?, "expiresAt": code.expires_at}),
-        )
+        Ok(serde_json::to_value(PairingLink {
+            url: crate::pairing::pairing_url(&base, &code.credential)?,
+            expires_at: code.expires_at,
+        })?)
     }
 
     pub fn revoke(&self, session_id: &str) -> anyhow::Result<()> {

@@ -6,6 +6,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use roboco_proto::PairedSession;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -29,18 +30,8 @@ pub struct PairingCode {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionGrant {
-    pub session: SessionInfo,
+    pub session: PairedSession,
     pub credential: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionInfo {
-    pub id: String,
-    pub label: String,
-    pub created_at: i64,
-    pub last_seen: i64,
-    pub revoked_at: Option<i64>,
 }
 
 impl PairingStore {
@@ -109,7 +100,7 @@ impl PairingStore {
         let Some(code_label) = code_label else {
             return Ok(None);
         };
-        let session = SessionInfo {
+        let session = PairedSession {
             id: uuid::Uuid::new_v4().to_string(),
             label: if label.trim().is_empty() {
                 code_label
@@ -136,7 +127,7 @@ impl PairingStore {
         }))
     }
 
-    pub fn authenticate(&self, credential: &str) -> anyhow::Result<Option<SessionInfo>> {
+    pub fn authenticate(&self, credential: &str) -> anyhow::Result<Option<PairedSession>> {
         if !valid_secret(credential) {
             return Ok(None);
         }
@@ -146,7 +137,7 @@ impl PairingStore {
             params![verifier("session", credential), crate::now_ms()], session_row).optional()?)
     }
 
-    pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+    pub fn list_sessions(&self) -> anyhow::Result<Vec<PairedSession>> {
         let db = self.connect()?;
         let mut query = db.prepare("SELECT id, label, created_at, last_seen, revoked_at FROM paired_sessions ORDER BY created_at, id")?;
         Ok(query
@@ -162,8 +153,8 @@ impl PairingStore {
     }
 }
 
-fn session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionInfo> {
-    Ok(SessionInfo {
+fn session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PairedSession> {
+    Ok(PairedSession {
         id: row.get(0)?,
         label: row.get(1)?,
         created_at: row.get(2)?,

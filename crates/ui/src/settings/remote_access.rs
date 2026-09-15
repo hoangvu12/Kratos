@@ -1,12 +1,13 @@
 //! Settings for this engine's listener and paired clients.
 use crate::{settings::widgets, state::AppState, theme::Theme};
 use gpui::{ClipboardItem, Context, Entity, Render, Task, Window, div, prelude::*, px};
+use roboco_proto::{PairingLink, RemoteAccessSnapshot};
 use roboco_rpc::methods;
 use serde_json::{Value, json};
 
 pub struct RemoteAccessPage {
     state: Entity<AppState>,
-    snapshot: Option<Value>,
+    snapshot: Option<RemoteAccessSnapshot>,
     url: Option<String>,
     error: Option<String>,
     busy: bool,
@@ -55,13 +56,19 @@ impl RemoteAccessPage {
                 page.busy = false;
                 match result {
                     Ok(value) if method == methods::CREATE_PAIRING_LINK => {
-                        page.url = value["url"].as_str().map(str::to_owned)
+                        match serde_json::from_value::<PairingLink>(value) {
+                            Ok(link) => page.url = Some(link.url),
+                            Err(error) => page.error = Some(error.to_string()),
+                        }
                     }
                     Err(error) => page.error = Some(error.to_string()),
                     _ => {}
                 }
                 match snapshot {
-                    Ok(value) => page.snapshot = Some(value),
+                    Ok(value) => match serde_json::from_value::<RemoteAccessSnapshot>(value) {
+                        Ok(snapshot) => page.snapshot = Some(snapshot),
+                        Err(error) => page.error = Some(error.to_string()),
+                    },
                     Err(error) => page.error = Some(error.to_string()),
                 }
                 cx.notify();
@@ -75,15 +82,12 @@ impl RemoteAccessPage {
 impl Render for RemoteAccessPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>().clone();
-        let status = self.snapshot.as_ref().map(|value| &value["status"]);
-        let enabled = status
-            .and_then(|value| value["enabled"].as_bool())
-            .unwrap_or(false);
-        let error = self.error.clone().or_else(|| {
-            status
-                .and_then(|value| value["error"].as_str())
-                .map(str::to_owned)
-        });
+        let status = self.snapshot.as_ref().map(|snapshot| &snapshot.status);
+        let enabled = status.map(|status| status.enabled).unwrap_or(false);
+        let error = self
+            .error
+            .clone()
+            .or_else(|| status.and_then(|status| status.error.clone()));
         let mut page = widgets::page_column()
             .child(widgets::page_header(&theme, "Remote access", None))
             .child(widgets::page_subtitle(&theme, "Pair your other devices with this engine. Use a trusted network or your own tunnel."))
@@ -148,24 +152,21 @@ impl Render for RemoteAccessPage {
         let rows = self
             .snapshot
             .as_ref()
-            .and_then(|value| value["sessions"].as_array())
-            .cloned()
+            .map(|snapshot| snapshot.sessions.clone())
             .unwrap_or_default();
         page = page.child(widgets::field_label(&theme, "Paired sessions"));
         if rows.is_empty() {
             page = page.child(widgets::page_subtitle(&theme, "No devices paired yet."));
         }
         for (index, row) in rows.into_iter().enumerate() {
-            let revoked = !row["revokedAt"].is_null();
-            let id = row["id"].as_str().unwrap_or_default().to_owned();
-            let label = row["label"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .unwrap_or("Paired device")
-                .to_owned();
-            let seen = row["lastSeen"]
-                .as_i64()
-                .and_then(chrono::DateTime::from_timestamp_millis);
+            let revoked = row.revoked_at.is_some();
+            let id = row.id.clone();
+            let label = if row.label.is_empty() {
+                "Paired device".to_owned()
+            } else {
+                row.label
+            };
+            let seen = chrono::DateTime::from_timestamp_millis(row.last_seen);
             let last_seen = super::devices::format_last_seen(seen, chrono::Utc::now());
             page = page.child(
                 widgets::section_card(&theme).child(
