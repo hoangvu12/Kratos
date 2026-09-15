@@ -115,7 +115,7 @@ mod tests {
         )
         .unwrap();
         core.workspace
-            .create_chat("same-chat", None, None, None, None)
+            .create_chat("same-chat", None, Some(&core.device_id), None, None)
             .unwrap();
         core.doc_host
             .open("same-chat")
