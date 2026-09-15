@@ -46,7 +46,7 @@ pub fn wire_params(
             return Ok(());
         };
         let parsed = ScopedId::parse(id)?;
-        if parsed.engine != crate::engine_registry::EngineKey::local() && &parsed.engine != owner {
+        if ScopedId::is_scoped(id) && &parsed.engine != owner {
             return Err(RpcError::Failed(
                 "Request identity belongs to another engine".into(),
             ));
@@ -211,17 +211,41 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(read["text"], expected);
+            if !owner.key().is_local() {
+                owner.call(methods::WRITE_WORKSPACE_FILE, json!({
+                    "chatId":chat_id,"path":"note.txt","text":"remote edit",
+                    "expectedCheckoutId":read["checkoutId"],
+                    "expectedContentHash":read["contentHash"],"encoding":"utf8","lineEnding":"lf"
+                })).await.unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(b.path().join("project/note.txt")).unwrap(),
+                    "remote edit"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(a.path().join("project/note.txt")).unwrap(),
+                    "local bytes"
+                );
+            }
+            let mut image_bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                1,
+                1,
+                image::Rgba([if owner.key().is_local() { 20 } else { 80 }, 0, 0, 255]),
+            ))
+            .write_to(&mut image_bytes, image::ImageFormat::Png)
+            .unwrap();
+            let image_bytes = image_bytes.into_inner();
             owner
                 .call(
                     methods::UPLOAD_CHUNK,
-                    json!({"uploadId":"same-upload","seq":0,"data":STANDARD.encode(expected)}),
+                    json!({"uploadId":"same-upload","seq":0,"data":STANDARD.encode(&image_bytes)}),
                 )
                 .await
                 .unwrap();
             let upload = owner
                 .call(
                     methods::UPLOAD_COMMIT,
-                    json!({"uploadId":"same-upload","fileName":"note.txt"}),
+                    json!({"uploadId":"same-upload","fileName":"note.png"}),
                 )
                 .await
                 .unwrap();
@@ -234,7 +258,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 STANDARD.decode(read["data"].as_str().unwrap()).unwrap(),
-                expected.as_bytes()
+                image_bytes
             );
         }
         let mut transcript = target
@@ -326,5 +350,7 @@ mod tests {
         let owner = EngineKey("engine-b".into());
         let foreign = ScopedId::encode(&EngineKey("engine-a".into()), "same-chat");
         assert!(wire_params(&owner, "QueueCommand", json!({"chatId": foreign})).is_err());
+        let local_reserved = ScopedId::encode(&EngineKey::local(), "engine:v1:literal-id");
+        assert!(wire_params(&owner, "QueueCommand", json!({"chatId": local_reserved})).is_err());
     }
 }

@@ -6215,25 +6215,10 @@ impl Composer {
                     &att.name,
                     att.image.clone(),
                 );
-                if let Some(local) = local_device_id.as_deref()
-                    && local != device_id
-                {
-                    attachments::seed_attachment_alias(
-                        local,
-                        upload_id,
-                        &att.name,
-                        att.image.clone(),
-                    );
-                }
             }
         }
         for (path, att) in echo_paths.iter().zip(&staged) {
             attachments::seed_attachment(&device_id, path, &att.name, att.image.clone());
-            if let Some(local) = local_device_id.as_deref()
-                && local != device_id
-            {
-                attachments::seed_attachment(local, path, &att.name, att.image.clone());
-            }
         }
 
         // Optimistic echo (client-minted id doubles as the persisted message id,
