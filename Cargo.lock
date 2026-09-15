@@ -7564,19 +7564,15 @@ dependencies = [
 name = "roboco-rpc"
 version = "0.2.65"
 dependencies = [
- "anyhow",
  "async-trait",
  "futures",
- "roboco-doc",
  "roboco-proto",
- "roboco-sync",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",
  "tracing",
- "uuid",
 ]
 
 [[package]]
