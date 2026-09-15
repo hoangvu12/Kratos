@@ -2215,7 +2215,7 @@ fn spawn_transcript_watch(
                 }
             };
             while let Some(value) = rx.recv().await {
-                let update: roboco_doc::TranscriptUpdate = match serde_json::from_value(value) {
+                let mut update: roboco_doc::TranscriptUpdate = match serde_json::from_value(value) {
                     Ok(frame) => frame,
                     Err(err) => {
                         // Schema skew (a newer peer's entry shape arriving
@@ -2227,6 +2227,7 @@ fn spawn_transcript_watch(
                         continue 'resubscribe;
                     }
                 };
+                crate::engine_registry::scope_transcript_frame(handle.key(), &mut update);
                 let roboco_doc::TranscriptUpdate {
                     frame,
                     context_usage: usage,
@@ -2391,7 +2392,7 @@ fn spawn_subagent_watch(
                 }
             };
             while let Some(value) = rx.recv().await {
-                let frame: TranscriptFrame = match serde_json::from_value(value) {
+                let mut update: roboco_doc::TranscriptUpdate = match serde_json::from_value(value) {
                     Ok(frame) => frame,
                     Err(err) => {
                         tracing::warn!(error = %err, "malformed subagent frame; resubscribing");
@@ -2399,6 +2400,8 @@ fn spawn_subagent_watch(
                         continue 'resubscribe;
                     }
                 };
+                crate::engine_registry::scope_transcript_frame(handle.key(), &mut update);
+                let frame = update.frame;
                 let mut desync = false;
                 let alive = this.update(cx, |state, cx| {
                     // A stale pump racing a snapshot/unwatch finds no key.

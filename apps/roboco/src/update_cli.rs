@@ -68,7 +68,7 @@ pub async fn update(edge_url: &str, check_only: bool) -> anyhow::Result<()> {
         InstallKind::Unmanaged => {
             bail!(
                 "this binary is not update-managed (source build or hand-copied).\n\
-                 Linux: curl -fsSL https://zeron.sh/install.sh | sh\n\
+                 Linux: download a Roboco release from https://github.com/hoangvu12/roboco/releases or rebuild from source.\n\
                  macOS: download the new Roboco.app dmg, or rebuild from source.\n\
                  Windows: use an update-enabled portable package, or rebuild from source."
             )

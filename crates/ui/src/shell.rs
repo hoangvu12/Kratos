@@ -2763,10 +2763,13 @@ impl Shell {
                 Duration::from_secs(20),
             )
             .await;
-            let entries: Option<Vec<roboco_doc::SessionMessageEntry>> = reply.ok().and_then(|v| {
+            let mut entries: Option<Vec<roboco_doc::SessionMessageEntry>> = reply.ok().and_then(|v| {
                 let text = v.get("text")?.as_str()?.to_owned();
                 serde_json::from_str(&text).ok()
             });
+            if let Some(entries) = entries.as_mut() {
+                crate::engine_registry::scope_transcript_entries(engine.key(), entries);
+            }
             state.update(cx, |s, cx| {
                 match entries {
                     Some(entries) => s.set_subagent_snapshot(doc_id, entries),
