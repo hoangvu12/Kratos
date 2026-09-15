@@ -131,6 +131,14 @@ async fn real_engine_reconnect_retains_rows_persists_pairing_and_forgets() {
             .await
             .is_ok()
     );
+    remote.shutdown().await;
+    drop(remote);
+    let remote = EngineCore::assemble_with_profile(
+        EngineProfile::local(remote_dir.path()).unwrap(),
+        Arc::new(HarnessRegistry::new()),
+        HarnessId::Mock,
+    )
+    .unwrap();
     let listener =
         roboco_engine::serve_engine_remote(address, remote.rpc_service(), remote_dir.path())
             .await
@@ -177,4 +185,33 @@ async fn real_engine_reconnect_retains_rows_persists_pairing_and_forgets() {
     reopened.shutdown().await;
     local.shutdown().await;
     remote.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn damaged_pairing_config_preserves_local_access_and_original_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ui_dir = tempfile::tempdir().unwrap();
+    let local = core(dir.path());
+    let client = Arc::new(roboco_rpc::memory_client(local.rpc_service()));
+    let info = client
+        .call_as(methods::ENGINE_INFO, json!({}))
+        .await
+        .unwrap();
+    let path = ui_dir.path().join("paired.json");
+    std::fs::write(&path, b"damaged config").unwrap();
+    let registry = EngineRegistry::open(path.clone(), info, client, None)
+        .await
+        .unwrap();
+    wait_for(&registry, |snapshot| snapshot.engines[0].chats_loaded).await;
+    assert_eq!(registry.snapshot().projected().chats.len(), 1);
+    assert!(registry.snapshot().configuration_error.is_some());
+    assert!(
+        registry
+            .pair("http://localhost/pair#token=code", "test")
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(path).unwrap(), b"damaged config");
+    registry.shutdown().await;
+    local.shutdown().await;
 }

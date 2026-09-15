@@ -445,11 +445,15 @@ impl Render for DevicesPage {
                                 .flex_none()
                                 .text_size(px(10.5))
                                 .text_color(theme.text_muted)
-                                .child(if workspace_scope == Some(WorkspaceScope::Local) {
-                                    "Local only"
-                                } else {
-                                    "This device"
-                                }),
+                                .child(
+                                    if workspace_scope == Some(WorkspaceScope::Local)
+                                        && self.state.read(cx).registry().is_none()
+                                    {
+                                        "Local only"
+                                    } else {
+                                        "This device"
+                                    },
+                                ),
                         )
                     })
                     .when_some(forget_key, |el, key| {
@@ -516,19 +520,33 @@ impl Render for DevicesPage {
                     ))
                     .child(widgets::page_subtitle(
                         &theme,
-                        devices_subtitle(workspace_scope),
+                        if self.state.read(cx).registry().is_some() {
+                            "Connect and manage engines."
+                        } else {
+                            devices_subtitle(workspace_scope)
+                        },
                     ))
-                    .when_some(self.error.clone(), |el, message| {
-                        el.child(
-                            widgets::error_strip(&theme, message)
-                                .id("devices-error")
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.error = None;
-                                    cx.notify();
-                                })),
-                        )
-                    })
+                    .when_some(
+                        self.error.clone().or_else(|| {
+                            self.state
+                                .read(cx)
+                                .registry_snapshot
+                                .configuration_error
+                                .clone()
+                                .map(Into::into)
+                        }),
+                        |el, message| {
+                            el.child(
+                                widgets::error_strip(&theme, message)
+                                    .id("devices-error")
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.error = None;
+                                        cx.notify();
+                                    })),
+                            )
+                        },
+                    )
                     .child(
                         div()
                             .mb(px(16.0))

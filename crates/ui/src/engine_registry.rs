@@ -84,6 +84,7 @@ pub struct EngineSnapshot {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RegistrySnapshot {
     pub engines: Vec<EngineSnapshot>,
+    pub configuration_error: Option<String>,
 }
 #[derive(Default)]
 pub struct ProjectedSnapshot {
@@ -113,7 +114,20 @@ impl RegistrySnapshot {
                 space.checkout_id = space.checkout_id.map(|id| scope(&id));
                 out.spaces.push(space);
             }
-            for mut device in engine.devices.clone() {
+            let devices = if engine.devices.is_empty() && !engine.key.is_local() {
+                vec![Device {
+                    id: engine.info.device_id.clone(),
+                    name: "Remote engine".into(),
+                    platform: String::new(),
+                    last_seen_at: None,
+                    created_at: None,
+                    version: None,
+                    capabilities: engine.info.capabilities.clone(),
+                }]
+            } else {
+                engine.devices.clone()
+            };
+            for mut device in devices {
                 device.id = scope(&device.id);
                 // Stale cached timestamps must never imply a live connection.
                 if engine.state != EngineConnectionState::Connected {
@@ -128,6 +142,40 @@ impl RegistrySnapshot {
             }
         }
         out
+    }
+}
+
+/// Project only transcript references which leave their owning chat. Message and
+/// tool IDs stay document-local; text, tool payloads and sidecar paths are untouched.
+pub fn scope_transcript_entries(key: &EngineKey, entries: &mut [roboco_doc::SessionMessageEntry]) {
+    fn scope(key: &EngineKey, id: &mut String) {
+        if ScopedId::is_scoped(id) && ScopedId::parse(id).is_ok_and(|id| &id.engine == key) {
+            return;
+        }
+        *id = ScopedId::encode(key, id);
+    }
+    for entry in entries {
+        scope(key, &mut entry.device_id);
+        for part in &mut entry.parts {
+            if let roboco_doc::MessagePart::Tool {
+                subagent_ref: Some(reference),
+                ..
+            } = part
+            {
+                scope(key, reference);
+            }
+        }
+    }
+}
+
+pub fn scope_transcript_frame(key: &EngineKey, update: &mut roboco_doc::TranscriptUpdate) {
+    match &mut update.frame {
+        roboco_doc::TranscriptFrame::Reset { reset } => scope_transcript_entries(key, reset),
+        roboco_doc::TranscriptFrame::Delta { upsert, .. } => {
+            for upsert in upsert {
+                scope_transcript_entries(key, std::slice::from_mut(&mut upsert.entry));
+            }
+        }
     }
 }
 
@@ -154,6 +202,7 @@ struct RegistryState {
 }
 struct Inner {
     path: PathBuf,
+    configuration_error: Option<String>,
     runtime: tokio::runtime::Handle,
     state: Mutex<RegistryState>,
     updates: watch::Sender<RegistrySnapshot>,
@@ -301,10 +350,16 @@ impl EngineRegistry {
         client: Arc<RpcClient>,
         reconnect_url: Option<String>,
     ) -> anyhow::Result<Self> {
-        let saved = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<SavedRegistry>(&bytes)?,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => SavedRegistry::default(),
-            Err(err) => return Err(err.into()),
+        let loaded = match std::fs::read(&path) {
+            Ok(bytes) => {
+                serde_json::from_slice::<SavedRegistry>(&bytes).map_err(anyhow::Error::from)
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(SavedRegistry::default()),
+            Err(err) => Err(err.into()),
+        };
+        let (saved, mut configuration_error) = match loaded {
+            Ok(saved) => (saved, None),
+            Err(_) => (SavedRegistry::default(), Some("Saved engine configuration could not be read. The file is preserved; pairing is unavailable until it is repaired.".to_string())),
         };
         let (updates, _) = watch::channel(RegistrySnapshot::default());
         let mut entries = BTreeMap::new();
@@ -313,12 +368,10 @@ impl EngineRegistry {
             entry(EngineKey::local(), local_info, None),
         );
         for saved in saved.engines {
-            anyhow::ensure!(
-                !saved.key.is_local()
-                    && !saved.key.0.is_empty()
-                    && !entries.contains_key(&saved.key),
-                "Invalid saved engine identity"
-            );
+            if saved.key.is_local() || saved.key.0.is_empty() || entries.contains_key(&saved.key) {
+                configuration_error = Some("Saved engine configuration contains invalid identities. The file is preserved; pairing is unavailable until it is repaired.".into());
+                continue;
+            }
             entries.insert(
                 saved.key.clone(),
                 entry(saved.key.clone(), saved.info.clone(), Some(saved)),
@@ -340,6 +393,7 @@ impl EngineRegistry {
         let registry = Self {
             inner: Arc::new(Inner {
                 path,
+                configuration_error,
                 runtime: tokio::runtime::Handle::current(),
                 state: Mutex::new(RegistryState {
                     entries,
@@ -390,6 +444,10 @@ impl EngineRegistry {
         Ok((self.target(&scoped.engine)?, scoped.raw_id))
     }
     pub async fn pair(&self, pairing_url: &str, label: &str) -> anyhow::Result<EngineKey> {
+        anyhow::ensure!(
+            self.inner.configuration_error.is_none(),
+            "Saved engine configuration needs repair before pairing"
+        );
         let (base, code) = parse_pairing_url(pairing_url)?;
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -476,6 +534,10 @@ impl EngineRegistry {
         self.publish();
     }
     fn persist(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.inner.configuration_error.is_none(),
+            "Saved engine configuration needs repair"
+        );
         let saved = SavedRegistry {
             engines: lock(&self.inner.state)
                 .entries
@@ -516,7 +578,10 @@ fn publish(inner: &Inner) {
         .values()
         .map(|e| e.snapshot.clone())
         .collect();
-    inner.updates.send_replace(RegistrySnapshot { engines });
+    inner.updates.send_replace(RegistrySnapshot {
+        engines,
+        configuration_error: inner.configuration_error.clone(),
+    });
 }
 fn update(weak: &Weak<Inner>, key: &EngineKey, f: impl FnOnce(&mut Entry)) -> bool {
     let Some(inner) = weak.upgrade() else {
