@@ -15,9 +15,6 @@
 //! - `EngineInfo` → `{deviceId, workspaceScope}` — this runtime's fixed identity
 //!   and data boundary (never forwarded)
 //! - `LocalDevice` → `{deviceId}` — legacy engine identity (never forwarded)
-//! - AuthRpc (feature-inventory §2): `AuthStatus` (stream), `SignIn`/`SignInHeadless` →
-//!   `{url}`, `CompleteSignIn {code}`, `SignOut`, `ListOrgs`, `CreateOrg {name}`,
-//!   `SelectOrg {organizationId}`
 //! - Repos (§3.5): `ListRepos`, `AddRepo {path}`, `CloneRepo {url}`,
 //!   `CreateRepo {name}`, `ListBranches {repoPath}` (default branch first),
 //!   `ListFolders {path?}`, `CreateWorktree {repoPath, branch}`, `DeleteWorktree
@@ -27,8 +24,7 @@
 //! - Terminals (§3.4): `OpenTerminal {chatId, cols, rows}` → `TerminalSession`,
 //!   `SubscribeTerminal {terminalId, afterSeq?}` → stream of `TerminalEvent`
 //!   (replay then live tail), `WriteTerminal {terminalId, data}`, `ResizeTerminal`,
-//!   `CloseTerminal`. M5 is single-user local: per-user owner checks land with
-//!   real multi-account auth in M6.
+//!   `CloseTerminal`. Paired clients have the full engine capability surface.
 //! - Agent accounts (§3.7): `ListAgentAccounts {forceUsage?}` →
 //!   `AgentAccountsSnapshot`, `ActivateAgentAccount`/`ForgetAgentAccount`
 //!   `{harness, accountId}` → snapshot, `StartAgentLogin {harness}` →
@@ -41,14 +37,7 @@
 //!
 //! ## Device-addressed routing (`targetDeviceId`, feature-inventory §2.1)
 //!
-//! ControlRpc methods are relay-forwardable: params may carry `targetDeviceId`. When it
-//! names another device, the call is forwarded verbatim over that device's relay DO via
-//! the [`LinkCache`] — the remote engine sees its own id and handles locally, so the
-//! forward can never loop. Streaming methods are proxied by re-subscribing remotely and
-//! piping items. To make another method device-addressable, nothing per-method is needed
-//! beyond listing it in [`forwardable`] (and [`is_stream_method`] if it streams);
-//! handlers stay transport-agnostic. This includes the workspace file surface,
-//! whose checkout always lives on the routed target device.
+//! Requests with a target device must arrive on that engine's own connection.
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -61,10 +50,9 @@ use tokio::sync::watch;
 
 use roboco_doc::{MessagePart, SessionCommandPayload};
 use roboco_proto::{ChatConfig, EngineInfo, HarnessId, ToolCall, WorkspaceScope};
-use roboco_rpc::{LinkCache, RpcError, RpcReply, RpcService, methods, parse_params};
+use roboco_rpc::{RpcError, RpcReply, RpcService, methods, parse_params};
 
 use crate::agent_accounts::AgentAccounts;
-use crate::auth::Auth;
 use crate::change_requests::CheckoutChangeRequests;
 use crate::diff_sync::CheckoutDiffSync;
 use crate::doc_host::DocHost;
@@ -231,6 +219,8 @@ struct DeleteWorktreeParams {
 struct ListFoldersParams {
     #[serde(default)]
     path: Option<String>,
+    #[serde(default)]
+    query: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -463,6 +453,7 @@ enum MutateParams {
 }
 
 pub struct EngineRpc {
+    remote_access: std::sync::Weak<crate::remote_access::RemoteAccessController>,
     sessions: SessionsEngine,
     doc_host: DocHost,
     workspace: WorkspaceHost,
@@ -475,10 +466,7 @@ pub struct EngineRpc {
     diff_sync: CheckoutDiffSync,
     uploads: Uploads,
     agent_accounts: AgentAccounts,
-    auth: Option<Auth>,
-    links: Option<std::sync::Arc<LinkCache>>,
     updater: Option<roboco_update::Updater>,
-    local_import: Option<crate::local_import::LocalImporter>,
     engine_info: EngineInfo,
 }
 
@@ -504,6 +492,7 @@ impl EngineRpc {
             capabilities: roboco_proto::capabilities::current(),
         };
         Self {
+            remote_access: Default::default(),
             sessions,
             doc_host,
             workspace,
@@ -516,10 +505,7 @@ impl EngineRpc {
             diff_sync,
             uploads,
             agent_accounts,
-            auth: None,
-            links: None,
             updater: None,
-            local_import: None,
             engine_info,
         }
     }
@@ -529,15 +515,8 @@ impl EngineRpc {
         self
     }
 
-    /// Attach the auth service (AuthStatus + AuthRpc mutations).
-    pub fn with_auth(mut self, auth: Auth) -> Self {
-        self.auth = Some(auth);
-        self
-    }
-
-    /// Attach the peer link cache — enables `targetDeviceId` relay forwarding.
-    pub fn with_links(mut self, links: std::sync::Arc<LinkCache>) -> Self {
-        self.links = Some(links);
+    pub fn with_remote_access(mut self, controller: std::sync::Weak<crate::remote_access::RemoteAccessController>) -> Self {
+        self.remote_access = controller;
         self
     }
 
@@ -547,28 +526,10 @@ impl EngineRpc {
         self
     }
 
-    /// Attach the local→synced profile importer (synced runtimes only).
-    pub fn with_local_import(mut self, importer: crate::local_import::LocalImporter) -> Self {
-        self.local_import = Some(importer);
-        self
-    }
-
-    fn auth(&self) -> Result<&Auth, RpcError> {
-        self.auth
-            .as_ref()
-            .ok_or_else(|| RpcError::Failed("auth unavailable".into()))
-    }
-
     fn updater(&self) -> Result<&roboco_update::Updater, RpcError> {
         self.updater
             .as_ref()
             .ok_or_else(|| RpcError::Failed("updates unavailable".into()))
-    }
-
-    fn local_importer(&self) -> Result<&crate::local_import::LocalImporter, RpcError> {
-        self.local_import
-            .as_ref()
-            .ok_or_else(|| RpcError::Failed("local import requires a synced workspace".into()))
     }
 
     /// Resolve a mention-search root from synced workspace rows. A client may
@@ -684,80 +645,6 @@ impl EngineRpc {
             }
         }
         paths
-    }
-
-    /// Forward a device-addressed call over the target device's relay. On transport
-    /// failure the cached link is invalidated so the next call re-dials.
-    async fn forward(
-        &self,
-        target: &str,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<RpcReply, RpcError> {
-        let Some(links) = &self.links else {
-            return Err(RpcError::Failed(format!(
-                "cannot reach device {target}: remote routing unavailable (offline)"
-            )));
-        };
-        let client = links.client(target).await?;
-        if is_stream_method(method) {
-            // Streams are unbounded by design (a quiet WATCH_* is healthy);
-            // only unary calls below get the reply deadline.
-            if method == methods::WATCH_CHECKOUT_CHANGE_REQUEST {
-                let rx = match client.subscribe_checked(method, params).await {
-                    Ok(rx) => rx,
-                    Err(err) => {
-                        if should_invalidate_link(&err) {
-                            links.invalidate(target);
-                        }
-                        return Err(err);
-                    }
-                };
-                let stream = futures::stream::unfold((rx, client), |(mut rx, client)| async move {
-                    rx.recv().await.map(|item| (item, (rx, client)))
-                });
-                return Ok(RpcReply::Stream(stream.boxed()));
-            }
-            let rx = match client.subscribe(method, params).await {
-                Ok(rx) => rx,
-                Err(err) => {
-                    if should_invalidate_link(&err) {
-                        links.invalidate(target);
-                    }
-                    return Err(err);
-                }
-            };
-            // Pipe remote items; the held client keeps the link's RpcClient alive for
-            // the stream's lifetime. A remote error just ends the stream (the relay
-            // link-down path fails pending calls; stream receivers close).
-            let stream = futures::stream::unfold((rx, client), |(mut rx, client)| async move {
-                rx.recv().await.map(|item| (item, (rx, client)))
-            });
-            return Ok(RpcReply::Stream(stream.boxed()));
-        }
-        let deadline = forward_deadline(method);
-        match tokio::time::timeout(deadline, client.call(method, params)).await {
-            Ok(Ok(value)) => Ok(RpcReply::Value(value)),
-            Ok(Err(err)) => {
-                if should_invalidate_link(&err) {
-                    links.invalidate(target);
-                }
-                Err(err)
-            }
-            Err(_) => {
-                // No reply inside the deadline. The link may be a zombie — the
-                // relay's auto-pong keeps a dead host socket looking alive
-                // (ws3 auto-pong incident) — so drop it; the next call re-dials.
-                // NOTE: the remote may still complete the forwarded work; the
-                // caller sees a retryable failure instead of hanging forever
-                // (the "Sending…" wedge, 2026-08-18).
-                links.invalidate(target);
-                Err(RpcError::Transport(format!(
-                    "no reply from device {target} for {method} within {}s",
-                    deadline.as_secs()
-                )))
-            }
-        }
     }
 
     fn mutate(&self, params: MutateParams) -> Result<(), RpcError> {
@@ -882,124 +769,6 @@ impl EngineRpc {
     }
 }
 
-/// An RPC rejection is scoped to the requested capability. Only a broken
-/// transport means the shared device link itself cannot carry other calls.
-fn should_invalidate_link(error: &RpcError) -> bool {
-    matches!(error, RpcError::Closed | RpcError::Transport(_))
-}
-
-/// Reply deadline for a relay-forwarded unary call. The relay is WebSocket
-/// frames through a DO: a dropped frame (host socket replaced mid-call, DO
-/// restart) loses the reply SILENTLY — the DO's auto-pong keeps the client
-/// socket looking healthy — and an unbounded await wedged callers forever
-/// (the composer's permanent "Sending…", 2026-08-18). Network-bound git and
-/// update methods get a long leash; worktree creation checks out a full tree;
-/// everything else is interactive and must fail fast.
-fn forward_deadline(method: &str) -> std::time::Duration {
-    use std::time::Duration;
-    match method {
-        methods::CLONE_REPO | methods::FETCH_ALL | methods::APPLY_UPDATE => {
-            Duration::from_secs(15 * 60)
-        }
-        methods::CREATE_WORKTREE => Duration::from_secs(120),
-        _ => Duration::from_secs(30),
-    }
-}
-
-/// ControlRpc methods that honor `targetDeviceId` (feature-inventory §2.1). Extend this
-/// list (plus [`is_stream_method`] for streams) to make more of the surface
-/// device-addressable — the handlers themselves need no changes.
-fn forwardable(method: &str) -> bool {
-    matches!(
-        method,
-        methods::LIST_HARNESSES
-            | methods::GET_TITLE_SETTINGS
-            | methods::SET_TITLE_SETTINGS
-            | methods::SET_HARNESS_ENABLED
-            | methods::LIST_MODELS
-            | methods::LIST_COMMANDS
-            | methods::QUEUE_COMMAND
-            | methods::WATCH_DOC_MESSAGES
-            // The queue lives on the chat doc, and only its host may send from
-            // it — same addressing as the command ledger next door.
-            | methods::WATCH_QUEUE
-            | methods::QUEUE_MESSAGE
-            | methods::UPDATE_QUEUED_MESSAGE
-            | methods::BEGIN_QUEUED_MESSAGE_EDIT
-            | methods::RENEW_QUEUED_MESSAGE_EDIT
-            | methods::FINISH_QUEUED_MESSAGE_EDIT
-            | methods::MOVE_QUEUED_MESSAGE
-            | methods::REMOVE_QUEUED_MESSAGE
-            | methods::SEND_QUEUED_MESSAGE_NOW
-            | methods::STEER_QUEUED_MESSAGE_NOW
-            // Repos/worktrees/folders are device-local filesystem state.
-            | methods::LIST_REPOS
-            | methods::ADD_REPO
-            | methods::CLONE_REPO
-            | methods::CREATE_REPO
-            | methods::LIST_BRANCHES
-            | methods::LIST_REFS
-            | methods::LIST_GIT_HISTORY
-            | methods::SEARCH_GIT_HISTORY
-            | methods::RESOLVE_GIT_AVATARS
-            | methods::FETCH_ALL
-            | methods::SWITCH_REF
-            | methods::LIST_FOLDERS
-            | methods::LIST_DRIVES
-            | methods::SEARCH_FILES
-            | methods::LIST_WORKSPACE_DIRECTORY
-            | methods::SEARCH_WORKSPACE_FILES
-            | methods::READ_WORKSPACE_IMAGE
-            | methods::READ_WORKSPACE_FILE
-            | methods::WRITE_WORKSPACE_FILE
-            | methods::WATCH_WORKSPACE_FILES
-            | methods::CREATE_WORKTREE
-            | methods::DELETE_WORKTREE
-            // Checkout diffs are produced on the device holding the checkout.
-            | methods::WATCH_CHECKOUT_DIFFS
-            | methods::WATCH_CHECKOUT_CHANGE_REQUEST
-            | methods::GET_CHECKOUT_DIFF
-            | methods::GET_CHECKOUT_FILE_DIFF_TEXT
-            // Terminals live on the chat's host device.
-            | methods::OPEN_TERMINAL
-            | methods::SUBSCRIBE_TERMINAL
-            | methods::WRITE_TERMINAL
-            | methods::RESIZE_TERMINAL
-            | methods::CLOSE_TERMINAL
-            // Agent accounts are per-device CLI logins (the device switcher
-            // retargets which device's logins are shown).
-            | methods::LIST_AGENT_ACCOUNTS
-            | methods::ACTIVATE_AGENT_ACCOUNT
-            | methods::FORGET_AGENT_ACCOUNT
-            | methods::START_AGENT_LOGIN
-            | methods::COMPLETE_AGENT_LOGIN
-            | methods::POLL_AGENT_LOGIN
-            | methods::CANCEL_AGENT_LOGIN
-            // Uploads/attachments target the chat's host device (the agent reads
-            // the committed file from that device's disk).
-            | methods::UPLOAD_CHUNK
-            | methods::UPLOAD_COMMIT
-            | methods::READ_ATTACHMENT_CHUNK
-            // Updates report/apply on the device whose binary they concern.
-            | methods::UPDATE_STATUS
-            | methods::APPLY_UPDATE
-    )
-}
-
-/// Forwardable methods whose reply is a stream (proxied item-by-item).
-fn is_stream_method(method: &str) -> bool {
-    matches!(
-        method,
-        methods::WATCH_DOC_MESSAGES
-            | methods::WATCH_QUEUE
-            | methods::SUBSCRIBE_TERMINAL
-            | methods::WATCH_CHECKOUT_DIFFS
-            | methods::WATCH_CHECKOUT_CHANGE_REQUEST
-            | methods::WATCH_WORKSPACE_FILES
-            | methods::UPDATE_STATUS
-    )
-}
-
 /// A watch receiver as a stream: current value first, then every change.
 fn watch_stream<T>(rx: watch::Receiver<T>) -> BoxStream<'static, serde_json::Value>
 where
@@ -1065,124 +834,36 @@ fn doc_messages_stream(
     .boxed()
 }
 
-/// Authentication-only RPC surface used while the headed app is waiting for a
-/// production WorkOS session. Keeping this independent from [`EngineRpc`] lets
-/// the UI show its sign-in and organization gates before identity-scoped Loro
-/// stores are opened.
-#[derive(Clone)]
-pub struct AuthRpc {
-    auth: Auth,
-}
-
-impl AuthRpc {
-    pub fn new(auth: Auth) -> Self {
-        Self { auth }
-    }
-
-    pub fn handles(method: &str) -> bool {
-        matches!(
-            method,
-            methods::AUTH_STATUS
-                | methods::SIGN_IN
-                | methods::SIGN_IN_HEADLESS
-                | methods::COMPLETE_SIGN_IN
-                | methods::SIGN_OUT
-                | methods::LIST_ORGS
-                | methods::CREATE_ORG
-                | methods::SELECT_ORG
-        )
-    }
-}
-
-#[async_trait]
-impl RpcService for AuthRpc {
-    async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
-        match method {
-            methods::AUTH_STATUS => Ok(RpcReply::Stream(watch_stream(self.auth.watch_state()))),
-            methods::SIGN_IN => {
-                let url = self
-                    .auth
-                    .start_sign_in()
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "url": url }))
-            }
-            methods::SIGN_IN_HEADLESS => {
-                let url = self.auth.start_headless_sign_in();
-                RpcReply::value(&serde_json::json!({ "url": url }))
-            }
-            methods::COMPLETE_SIGN_IN => {
-                #[derive(Deserialize)]
-                struct P {
-                    code: String,
-                }
-                let p: P = parse_params(params)?;
-                self.auth
-                    .complete_sign_in(&p.code)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "ok": true }))
-            }
-            methods::SIGN_OUT => {
-                self.auth.sign_out();
-                RpcReply::value(&serde_json::json!({ "ok": true }))
-            }
-            methods::LIST_ORGS => {
-                let orgs = self
-                    .auth
-                    .list_orgs()
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "orgs": orgs }))
-            }
-            methods::CREATE_ORG => {
-                #[derive(Deserialize)]
-                struct P {
-                    name: String,
-                }
-                let p: P = parse_params(params)?;
-                self.auth
-                    .create_org(&p.name)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "ok": true }))
-            }
-            methods::SELECT_ORG => {
-                #[derive(Deserialize)]
-                #[serde(rename_all = "camelCase")]
-                struct P {
-                    organization_id: String,
-                }
-                let p: P = parse_params(params)?;
-                self.auth
-                    .select_org(&p.organization_id)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "ok": true }))
-            }
-            _ => Err(RpcError::UnknownMethod(method.to_string())),
-        }
-    }
-}
-
 #[async_trait]
 impl RpcService for EngineRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
-        // Device-addressed routing: forward calls that target another device over its
-        // relay. The target compares the id to its own, so forwards cannot loop.
-        if forwardable(method)
-            && let Some(target) = params.get("targetDeviceId").and_then(|v| v.as_str())
+        // Fail closed if the client selected the wrong engine connection.
+        if let Some(target) = params.get("targetDeviceId").and_then(|v| v.as_str())
             && target != self.doc_host.device_id()
         {
             let target = target.to_string();
-            return self.forward(&target, method, params).await;
-        }
-        if AuthRpc::handles(method) {
-            return AuthRpc::new(self.auth()?.clone())
-                .handle(method, params)
-                .await;
+            return Err(RpcError::Failed(format!(
+                "engine {target} is not connected; requests must use its own connection"
+            )));
         }
         match method {
+            methods::GET_REMOTE_ACCESS | methods::SET_REMOTE_ACCESS | methods::CREATE_PAIRING_LINK | methods::REVOKE_PAIRING_SESSION => {
+                let controller = self.remote_access.upgrade().ok_or_else(|| RpcError::Failed("remote access unavailable".into()))?;
+                let result = match method {
+                    methods::SET_REMOTE_ACCESS => {
+                        let enabled = params.get("enabled").and_then(|value| value.as_bool()).ok_or_else(|| RpcError::BadParams("enabled must be a boolean".into()))?;
+                        controller.set_enabled(enabled).await
+                    }
+                    methods::CREATE_PAIRING_LINK => controller.create_link().await,
+                    methods::REVOKE_PAIRING_SESSION => {
+                        let id = params.get("sessionId").and_then(|value| value.as_str()).ok_or_else(|| RpcError::BadParams("sessionId is required".into()))?;
+                        controller.revoke(id).map_err(|error| RpcError::Failed(error.to_string()))?;
+                        controller.snapshot().await
+                    }
+                    _ => controller.snapshot().await,
+                };
+                RpcReply::value(&result.map_err(|error| RpcError::Failed(error.to_string()))?)
+            }
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
@@ -1403,62 +1084,7 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "sent": sent }))
             }
-            methods::PROBE_SYNC => {
-                self.workspace.probe();
-                self.doc_host.probe_open_chats();
-                self.doc_host.probe_edge_reachability();
-                RpcReply::value(&serde_json::json!({}))
-            }
-            methods::SYNC_STATUS => {
-                fn room_json(s: &roboco_sync::RoomStatsSnapshot) -> serde_json::Value {
-                    serde_json::json!({
-                        "connected": s.connected,
-                        "synced": s.synced,
-                        "lastPushedMs": s.last_pushed_ms,
-                        "lastAckMs": s.last_ack_ms,
-                        "rejoins": s.rejoins,
-                        "probes": s.probes,
-                        "fullResyncs": s.full_resyncs,
-                        "disconnects": s.disconnects,
-                        "rejected": s.rejected,
-                    })
-                }
-                fn chat2_json(s: &roboco_sync::ChatStatsSnapshot) -> serde_json::Value {
-                    serde_json::json!({
-                        "connected": s.connected,
-                        "cursor": s.cursor,
-                        "headSeq": s.head_seq,
-                        "seqFloor": s.seq_floor,
-                        "checkpointSeq": s.checkpoint_seq,
-                        "checkpointSize": s.checkpoint_size,
-                        "rowCount": s.row_count,
-                        "rowBytes": s.row_bytes,
-                        "pendingPushes": s.pending_pushes,
-                        "rejoins": s.rejoins,
-                        "disconnects": s.disconnects,
-                        "rejected": s.rejected,
-                        "serverResets": s.server_resets,
-                    })
-                }
-                let workspace = self.workspace.sync_status();
-                let chats: Vec<serde_json::Value> = self
-                    .doc_host
-                    .sync_statuses()
-                    .iter()
-                    .map(|(chat_id, room)| {
-                        serde_json::json!({
-                            "chatId": chat_id,
-                            "room": room.as_ref().map(chat2_json),
-                        })
-                    })
-                    .collect();
-                RpcReply::value(&serde_json::json!({
-                    "deviceId": self.doc_host.device_id(),
-                    "nowMs": crate::now_ms(),
-                    "workspace": workspace.as_ref().map(room_json),
-                    "chats": chats,
-                }))
-            }
+
             methods::WATCH_CONNECTIVITY => Ok(RpcReply::Stream(watch_stream(
                 self.doc_host.watch_connectivity(),
             ))),
@@ -1546,42 +1172,6 @@ impl RpcService for EngineRpc {
             }
             methods::LOCAL_DEVICE => {
                 RpcReply::value(&serde_json::json!({ "deviceId": self.doc_host.device_id() }))
-            }
-            methods::LOCAL_IMPORT_STATUS => {
-                let importer = self.local_importer()?.clone();
-                let status = tokio::task::spawn_blocking(move || importer.status())
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&status)
-            }
-            methods::IMPORT_LOCAL_WORKSPACE => {
-                let importer = self.local_importer()?.clone();
-                // Progress rides an unbounded channel: the importer is
-                // blocking (sqlite + fs) and must never wedge on a slow
-                // viewer; items are tiny and bounded by the chat count.
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-                tokio::task::spawn_blocking(move || {
-                    let emit = |event: crate::local_import::ImportEvent| {
-                        if let Ok(item) = serde_json::to_value(&event) {
-                            let _ = tx.send(item);
-                        }
-                    };
-                    if let Err(err) = importer.run(emit) {
-                        tracing::error!(error = %err, "local import failed");
-                        let _ = tx.send(serde_json::json!({
-                            "kind": "summary",
-                            "importedChats": 0, "importedSpaces": 0,
-                            "skippedChats": 0, "skippedSpaces": 0,
-                            "journalsCopied": 0, "ledgerRowsMerged": 0,
-                            "errors": [format!("{err}")],
-                        }));
-                    }
-                    // tx drops here — the stream ends after the summary item.
-                });
-                Ok(RpcReply::Stream(Box::pin(futures::stream::poll_fn(
-                    move |cx| rx.poll_recv(cx),
-                ))))
             }
             methods::UPDATE_STATUS => Ok(RpcReply::Stream(watch_stream(self.updater()?.watch()))),
             methods::APPLY_UPDATE => {
@@ -2010,10 +1600,27 @@ impl RpcService for EngineRpc {
                 let p: ListFoldersParams = parse_params(params)?;
                 let listing = self
                     .repos
-                    .list_folders(p.path)
+                    .list_folders_for_query(p.path, &p.query)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&listing)
+            }
+            methods::PREPARE_SPACE_PATH => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    path: String,
+                    #[serde(default)]
+                    create_if_missing: bool,
+                }
+                let p: Params = parse_params(params)?;
+                let path = tokio::task::spawn_blocking(move || {
+                    crate::space_paths::prepare(&p.path, p.create_if_missing)
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&path)
             }
             methods::LIST_DRIVES => {
                 let drives = self
@@ -2312,55 +1919,6 @@ mod tests {
         .expect("ui param shape");
         assert_eq!(p.account_id, "acct-1");
         assert_eq!(p.harness, HarnessId::ClaudeCode);
-    }
-
-    #[test]
-    fn local_device_is_not_forwardable() {
-        assert!(!forwardable(methods::LOCAL_DEVICE));
-        assert!(!forwardable(methods::ENGINE_INFO));
-        assert!(!forwardable(methods::ENGINE_READY));
-        assert!(forwardable(methods::QUEUE_COMMAND));
-        assert!(forwardable(methods::SEARCH_FILES));
-        assert!(forwardable(methods::SEARCH_GIT_HISTORY));
-        assert!(forwardable(methods::FETCH_ALL));
-        assert!(forwardable(methods::RESOLVE_GIT_AVATARS));
-        assert!(forwardable(methods::WATCH_CHECKOUT_CHANGE_REQUEST));
-        assert!(is_stream_method(methods::WATCH_CHECKOUT_CHANGE_REQUEST));
-        assert!(forwardable(methods::LIST_WORKSPACE_DIRECTORY));
-        assert!(forwardable(methods::SEARCH_WORKSPACE_FILES));
-        assert!(forwardable(methods::READ_WORKSPACE_FILE));
-        assert!(forwardable(methods::READ_WORKSPACE_IMAGE));
-        assert!(forwardable(methods::WRITE_WORKSPACE_FILE));
-        assert!(forwardable(methods::WATCH_WORKSPACE_FILES));
-        assert!(!is_stream_method(methods::LIST_WORKSPACE_DIRECTORY));
-        assert!(!is_stream_method(methods::SEARCH_WORKSPACE_FILES));
-        assert!(!is_stream_method(methods::READ_WORKSPACE_FILE));
-        assert!(!is_stream_method(methods::WRITE_WORKSPACE_FILE));
-        assert!(is_stream_method(methods::WATCH_WORKSPACE_FILES));
-    }
-
-    /// Every forwardable unary method gets a bounded reply deadline —
-    /// interactive calls fail fast, network-bound git/update calls get the
-    /// long leash, and nothing awaits forever (the "Sending…" wedge).
-    #[test]
-    fn forward_deadlines_are_tiered_and_bounded() {
-        use std::time::Duration;
-        assert_eq!(
-            forward_deadline(methods::CREATE_WORKTREE),
-            Duration::from_secs(120)
-        );
-        assert_eq!(
-            forward_deadline(methods::CLONE_REPO),
-            Duration::from_secs(15 * 60)
-        );
-        assert_eq!(
-            forward_deadline(methods::LIST_BRANCHES),
-            Duration::from_secs(30)
-        );
-        assert_eq!(
-            forward_deadline(methods::QUEUE_COMMAND),
-            Duration::from_secs(30)
-        );
     }
 
     #[test]

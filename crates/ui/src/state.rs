@@ -17,6 +17,9 @@
 //! Pure logic (sort order, staleness, gate phase) lives in free functions with
 //! unit tests; rendering reads them.
 
+use crate::engine_registry::{
+    EngineConnectionState, EngineRegistry, EngineTarget, RegistrySnapshot, ScopedId,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,10 +32,10 @@ use serde::de::DeserializeOwned;
 
 use crate::comments::ReviewComment;
 use roboco_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
-use roboco_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock, rpc::AuthRpc};
+use roboco_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock};
 use roboco_proto::{
-    AuthState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, Device,
-    EngineInfo, HarnessId, Session, Space, WorkspaceScope,
+    ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, Device, EngineInfo,
+    HarnessId, Session, Space, WorkspaceScope,
 };
 use roboco_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_client, methods};
 
@@ -51,14 +54,6 @@ pub struct EngineBootConfig {
     pub data_dir: PathBuf,
     /// Localhost IPC port to probe / serve.
     pub ipc_port: u16,
-    /// Edge base URL for the embedded engine.
-    pub edge_url: String,
-    /// Bearer for edge room joins; `None` runs offline.
-    pub edge_token: Option<String>,
-    /// Workspace org override for explicit dev-mode runs.
-    pub org_id: Option<String>,
-    /// WorkOS client id for production authentication.
-    pub workos_client_id: Option<String>,
     /// Harness for doc-command runs until per-chat config lands (M4).
     pub default_harness: HarnessId,
 }
@@ -77,7 +72,7 @@ pub enum EngineMode {
 /// teardown.
 #[async_trait]
 trait EngineBackend: Send + Sync {
-    fn client(&self) -> &RpcClient;
+    fn client(&self) -> &Arc<RpcClient>;
     fn mode(&self) -> EngineMode;
     /// Graceful teardown (drains runs / flushes docs for the in-process engine).
     async fn shutdown(&self);
@@ -87,16 +82,15 @@ trait EngineBackend: Send + Sync {
 struct InProcessEngine {
     runtime: Arc<tokio::sync::Mutex<Option<EngineRuntime>>>,
     boot_task: tokio::task::JoinHandle<()>,
-    refresh_task: tokio::task::JoinHandle<()>,
     /// Serves this engine to other viewports over the IPC port. `None` when the
     /// port was already taken — the window still works over its own transport.
     ipc_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    client: RpcClient,
+    client: Arc<RpcClient>,
 }
 
 #[async_trait]
 impl EngineBackend for InProcessEngine {
-    fn client(&self) -> &RpcClient {
+    fn client(&self) -> &Arc<RpcClient> {
         &self.client
     }
     fn mode(&self) -> EngineMode {
@@ -116,7 +110,6 @@ impl EngineBackend for InProcessEngine {
         if let Some(runtime) = self.runtime.lock().await.take() {
             runtime.shutdown().await;
         }
-        self.refresh_task.abort();
     }
 }
 
@@ -127,11 +120,9 @@ enum DeferredEngineState {
     Failed(String),
 }
 
-/// Serves engine identity and AuthRpc immediately, then holds data calls only
-/// while a captured synced profile still needs organization onboarding.
+/// Serves engine identity immediately, then holds data calls until local stores are ready.
 /// Existing subscriptions attach to the assembled service without reconnecting.
 struct DeferredEngineRpc {
-    auth: AuthRpc,
     engine_info: EngineInfo,
     state: tokio::sync::watch::Receiver<DeferredEngineState>,
     service: Arc<tokio::sync::OnceCell<Arc<dyn RpcService>>>,
@@ -149,9 +140,6 @@ impl RpcService for DeferredEngineRpc {
                 Ok(()) => RpcReply::value(&serde_json::json!({ "ready": true })),
                 Err(message) => Err(RpcError::Failed(message)),
             };
-        }
-        if AuthRpc::handles(method) {
-            return self.auth.handle(method, params).await;
         }
 
         let mut state = self.state.clone();
@@ -200,7 +188,7 @@ struct RemoteEngine {
 
 #[async_trait]
 impl EngineBackend for RemoteEngine {
-    fn client(&self) -> &RpcClient {
+    fn client(&self) -> &Arc<RpcClient> {
         &self.client
     }
     fn mode(&self) -> EngineMode {
@@ -243,12 +231,9 @@ impl EngineHandle {
         tracing::info!(data_dir = %config.data_dir.display(), "no daemon on port; embedding engine");
         let engine_config = EngineConfig {
             data_dir: config.data_dir,
-            edge_url: config.edge_url,
-            edge_token: config.edge_token,
+
             ipc_port: config.ipc_port,
             default_harness: config.default_harness,
-            org_id: config.org_id,
-            workos_client_id: config.workos_client_id,
         };
 
         // Own the data dir before opening anything under it or binding IPC —
@@ -273,31 +258,32 @@ impl EngineHandle {
             }
         };
 
-        let auth = Engine::build_auth(&engine_config).await;
-        let workspace_scope = Engine::initial_workspace_scope(&auth);
-        let initial_profile = Engine::resolve_profile(&engine_config, &auth, workspace_scope)?;
-        let profile_is_resolved = initial_profile.is_some();
-        let engine_info = Engine::engine_info(&engine_config, workspace_scope)?;
-        let refresh_task = auth.spawn_refresh_loop();
+        let profile = Engine::resolve_profile(&engine_config)?;
+        let engine_info = Engine::engine_info(&engine_config, WorkspaceScope::Local)?;
         let (state_tx, mut state_rx) = tokio::sync::watch::channel(DeferredEngineState::Waiting);
         let assembled_service = Arc::new(tokio::sync::OnceCell::new());
         let service: Arc<dyn RpcService> = Arc::new(DeferredEngineRpc {
-            auth: AuthRpc::new(auth.clone()),
             engine_info: engine_info.clone(),
             state: state_rx.clone(),
             service: assembled_service.clone(),
         });
-        let client = memory_client(service.clone());
+        let client = Arc::new(memory_client(service.clone()));
 
         // Serve the same service on the IPC port so a terminal viewport can
         // attach to this window's engine with no setup. Deliberately the
         // *deferred* service, not the assembled one: a viewport that connects
-        // during cloud onboarding gets EngineInfo and AuthRpc immediately, and
+        // during engine assembly gets EngineInfo immediately, and
         // its data subscriptions wait exactly as this window's do.
         //
         // Best-effort — losing the bind race with another engine costs other
         // viewports, not this one.
-        let ipc_task = match roboco_engine::serve_ipc(engine_config.ipc_port, service).await {
+        let ipc_task = match roboco_engine::serve_engine_ipc(
+            engine_config.ipc_port,
+            service,
+            &engine_config.data_dir,
+        )
+        .await
+        {
             Ok(task) => Some(task),
             Err(err) => {
                 tracing::warn!(
@@ -312,38 +298,10 @@ impl EngineHandle {
         let runtime_for_boot = runtime.clone();
         let service_for_boot = assembled_service.clone();
         // The instance lock rides into the boot task and is consumed by
-        // assembly — held through sign-in onboarding too, because this process
+        // assembly, because this process
         // owns the data dir from the moment it decided to embed.
         let boot_task = tokio::spawn(async move {
-            let profile = match initial_profile {
-                Some(profile) => profile,
-                None => {
-                    let mut auth_state = auth.watch_state();
-                    while !auth_state.borrow().is_signed_in() {
-                        if auth_state.changed().await.is_err() {
-                            state_tx.send_replace(DeferredEngineState::Failed(
-                                "authentication state closed before workspace onboarding".into(),
-                            ));
-                            return;
-                        }
-                    }
-                    match Engine::resolve_profile(&engine_config, &auth, workspace_scope) {
-                        Ok(Some(profile)) => profile,
-                        Ok(None) => {
-                            state_tx.send_replace(DeferredEngineState::Failed(
-                                "workspace onboarding completed without an organization".into(),
-                            ));
-                            return;
-                        }
-                        Err(err) => {
-                            state_tx.send_replace(DeferredEngineState::Failed(err.to_string()));
-                            return;
-                        }
-                    }
-                }
-            };
-
-            match Engine::assemble_runtime_with_lock(&engine_config, auth, profile, lock).await {
+            match Engine::assemble_runtime_with_lock(&engine_config, profile, lock).await {
                 Ok(engine_runtime) => {
                     let service: Arc<dyn RpcService> = engine_runtime.core().rpc_service();
                     *runtime_for_boot.lock().await = Some(engine_runtime);
@@ -365,18 +323,15 @@ impl EngineHandle {
             inner: Arc::new(InProcessEngine {
                 runtime,
                 boot_task,
-                refresh_task,
                 ipc_task: tokio::sync::Mutex::new(ipc_task),
                 client,
             }),
             engine_info,
             deferred_state: Some(state_rx.clone()),
         };
-        // Local, development, and already-resolved synced profiles need no
-        // authentication UI while assembling. Keep the viewport Connecting
-        // until their stores and journals are actually open, and surface a
+        // Keep the viewport Connecting until stores and journals are open; surface a
         // boot failure through the existing bootstrap error path.
-        if profile_is_resolved && let Err(message) = wait_for_deferred_engine(&mut state_rx).await {
+        if let Err(message) = wait_for_deferred_engine(&mut state_rx).await {
             handle.shutdown().await;
             return Err(anyhow::anyhow!(message));
         }
@@ -472,7 +427,7 @@ impl EngineHandle {
 }
 
 /// Query the current protocol first, with a conservative fallback for daemons
-/// from before `EngineInfo` existed. Old daemons are always treated as synced.
+/// from before `EngineInfo` existed, using their local device identity.
 async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
     match client
         .call_as(methods::ENGINE_INFO, serde_json::json!({}))
@@ -490,7 +445,7 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
                 .await?;
             Ok(EngineInfo {
                 device_id: legacy.device_id,
-                workspace_scope: WorkspaceScope::Synced,
+                workspace_scope: WorkspaceScope::Local,
                 capabilities: Vec::new(),
             })
         }
@@ -509,45 +464,8 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
 pub use roboco_proto::view::{
     ChatGroup, ConnectionStatus, GatePhase, Indicator, SESSION_STALE_MS, attention_rank,
     chat_location, display_status, effective_indicator, format_time_ago, gate_phase, group_chats,
-    parse_auth_state, project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
+    project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
 };
-
-// ---------------------------------------------------------------------------
-// Org gate (pure)
-// ---------------------------------------------------------------------------
-
-/// One org membership row (tolerant local mirror of the engine's ListOrgs
-/// reply — `{orgs: [{id, organizationId, name}]}`).
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OrgRow {
-    pub organization_id: String,
-    pub name: String,
-}
-
-/// Parse a ListOrgs reply tolerantly (accepts a bare array too).
-pub fn parse_orgs(value: &serde_json::Value) -> Vec<OrgRow> {
-    let list = value.get("orgs").unwrap_or(value);
-    serde_json::from_value(list.clone()).unwrap_or_default()
-}
-
-/// Workspace names must be non-empty (trimmed) and reasonably short.
-pub fn org_name_valid(name: &str) -> bool {
-    let trimmed = name.trim();
-    !trimmed.is_empty() && trimmed.chars().count() <= 64
-}
-
-/// Memberships sorted by name (case-insensitive), deduped by organization id.
-pub fn sort_memberships(mut orgs: Vec<OrgRow>) -> Vec<OrgRow> {
-    orgs.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    orgs.dedup_by(|a, b| a.organization_id == b.organization_id);
-    orgs
-}
 
 // ---------------------------------------------------------------------------
 // AppState entity
@@ -586,11 +504,9 @@ pub struct UploadProgress {
 /// glue ([`Self::bootstrap`], [`Self::select_chat`]) layers subscriptions on top.
 pub struct AppState {
     pub connection: ConnectionStatus,
-    /// Fixed data boundary of the attached engine. Authentication may change
+    /// Fixed data boundary of the attached engine. The profile remains fixed
     /// in place, but changing this scope requires assembling a new runtime.
     pub workspace_scope: Option<WorkspaceScope>,
-    /// Auth stream value; `None` until the engine reports one (M4).
-    pub auth: Option<AuthState>,
     pub devices: Vec<Device>,
     // Last published device presentation. Heartbeats refresh the underlying
     // timestamps without invalidating every view when no displayed value changed.
@@ -675,6 +591,8 @@ pub struct AppState {
     /// bootstrap so child views can persist small preference files.
     pub data_dir: Option<PathBuf>,
     engine: Option<EngineHandle>,
+    registry: Option<EngineRegistry>,
+    pub registry_snapshot: RegistrySnapshot,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
     change_requests: ChangeRequestClientState,
@@ -717,7 +635,7 @@ impl AppState {
         Self {
             connection: ConnectionStatus::Connecting,
             workspace_scope: None,
-            auth: None,
+
             devices: Vec::new(),
             device_presentation: None,
             session_presence_presentation: Vec::new(),
@@ -746,6 +664,8 @@ impl AppState {
             update: None,
             data_dir: None,
             engine: None,
+            registry: None,
+            registry_snapshot: RegistrySnapshot::default(),
             watch_tasks: Vec::new(),
             transcript_task: None,
             change_requests: ChangeRequestClientState::default(),
@@ -1088,26 +1008,6 @@ impl AppState {
         self.update = Some(status);
     }
 
-    pub fn apply_auth(&mut self, auth: AuthState) {
-        self.auth = Some(auth);
-    }
-
-    /// Tolerant AuthStatus frame reducer (see [`parse_auth_state`]).
-    pub fn apply_auth_value(&mut self, value: serde_json::Value) {
-        match parse_auth_state(&value) {
-            Some(auth) => self.apply_auth(auth),
-            None => tracing::warn!("dropping unrecognized AuthStatus frame"),
-        }
-    }
-
-    /// The signed-in user, if the engine reports one.
-    pub fn auth_user(&self) -> Option<&roboco_proto::UserProfile> {
-        match self.auth.as_ref()? {
-            AuthState::SignedIn { user, .. } | AuthState::NeedsOrganization { user } => Some(user),
-            AuthState::SignedOut => None,
-        }
-    }
-
     pub fn apply_transcript(&mut self, entries: Vec<SessionMessageEntry>) {
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         // Doc frames supersede optimistic echoes carrying the same id.
@@ -1183,7 +1083,7 @@ impl AppState {
         if self.sub_watch_tasks.contains_key(&doc_id) {
             return;
         }
-        let Some(handle) = self.engine.clone() else {
+        let Ok(handle) = self.target_for_id(&doc_id) else {
             return;
         };
         self.sub_transcripts.entry(doc_id.clone()).or_default();
@@ -1480,6 +1380,15 @@ impl AppState {
     /// from slow sync. The local device is trivially online; unknown devices
     /// get the benefit of the doubt (no evidence — don't cry wolf).
     pub fn device_online(&self, device_id: &str, now: DateTime<Utc>) -> bool {
+        if let Ok(scope) = ScopedId::parse(device_id)
+            && let Some(engine) = self
+                .registry_snapshot
+                .engines
+                .iter()
+                .find(|e| e.key == scope.engine)
+        {
+            return engine.state == EngineConnectionState::Connected;
+        }
         if self.local_device_id.as_deref() == Some(device_id) {
             return true;
         }
@@ -1586,11 +1495,28 @@ impl AppState {
     }
 
     pub fn gate(&self) -> GatePhase {
-        gate_phase(&self.connection, self.workspace_scope, self.auth.as_ref())
+        gate_phase(&self.connection)
     }
 
     pub fn engine(&self) -> Option<&EngineHandle> {
         self.engine.as_ref()
+    }
+
+    pub fn registry(&self) -> Option<&EngineRegistry> {
+        self.registry.as_ref()
+    }
+    pub fn target_for_id(&self, id: &str) -> Result<EngineTarget, RpcError> {
+        self.registry
+            .as_ref()
+            .ok_or(RpcError::Closed)?
+            .resolve(id)
+            .map(|(target, _)| target)
+    }
+    pub fn local_target(&self) -> Result<EngineTarget, RpcError> {
+        self.registry
+            .as_ref()
+            .map(EngineRegistry::local)
+            .ok_or(RpcError::Closed)
     }
 
     /// Drop every account-scoped view and subscription after its runtime has
@@ -1598,13 +1524,15 @@ impl AppState {
     /// account while the local profile is opening.
     pub fn prepare_runtime_replacement(&mut self, cx: &mut Context<Self>) {
         self.engine = None;
+        self.registry = None;
+        self.registry_snapshot = RegistrySnapshot::default();
         self.watch_tasks.clear();
         self.transcript_task = None;
         self.change_request_tasks.clear();
         self.change_requests = ChangeRequestClientState::default();
         self.connection = ConnectionStatus::Connecting;
         self.workspace_scope = None;
-        self.auth = None;
+
         self.devices.clear();
         self.device_presentation = None;
         self.session_presence_presentation.clear();
@@ -1641,7 +1569,7 @@ impl AppState {
         state.update(cx, |s, cx| {
             s.connection = ConnectionStatus::Connecting;
             s.workspace_scope = None;
-            s.auth = None;
+
             s.data_dir = Some(data_dir);
             cx.notify();
         });
@@ -1668,7 +1596,7 @@ impl AppState {
     }
 
     /// Wire the connected engine: mark Ready and start the standing watches.
-    /// Methods the engine doesn't serve yet (chats/devices/auth land with the
+    /// Methods the engine doesn't serve yet (chats/devices land with the
     /// workspace doc in M4) fail their subscribe and are skipped gracefully.
     fn attach_engine(&mut self, handle: EngineHandle, cx: &mut Context<Self>) {
         // The attachment notification precedes the first connectivity frame.
@@ -1683,20 +1611,12 @@ impl AppState {
         if let Some(task) = spawn_deferred_engine_watch(cx, handle.clone()) {
             watch_tasks.push(task);
         }
+        watch_tasks.push(spawn_registry_watch(
+            cx,
+            handle.clone(),
+            self.data_dir.clone(),
+        ));
         watch_tasks.extend([
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::WATCH_SESSIONS,
-                AppState::apply_sessions,
-            ),
-            spawn_chats_watch(cx, handle.clone()),
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::WATCH_DEVICES,
-                AppState::apply_devices,
-            ),
             spawn_watch(
                 cx,
                 handle.clone(),
@@ -1715,15 +1635,6 @@ impl AppState {
                     true
                 },
             ),
-            spawn_watch(cx, handle.clone(), methods::WATCH_SPACES, |state, value| {
-                state.apply_spaces(value);
-                true
-            }),
-            // Auth frames parse tolerantly — engine and proto tags differ today.
-            spawn_watch(cx, handle.clone(), methods::AUTH_STATUS, |state, value| {
-                state.apply_auth_value(value);
-                true
-            }),
             spawn_watch(
                 cx,
                 handle.clone(),
@@ -1740,22 +1651,11 @@ impl AppState {
         // EngineInfo is part of the attachment boundary: views must know which
         // data profile they reached before they are allowed to render Ready.
         self.connection = ConnectionStatus::Ready;
-        // Re-subscribe the transcript if a chat was already selected (reconnect path).
-        if let Some(chat_id) = self.selected_chat.clone() {
-            self.transcript_task =
-                Some(spawn_transcript_watch(cx, handle.clone(), chat_id.clone()));
-            if handle
-                .engine_info()
-                .supports(roboco_proto::capabilities::MESSAGE_QUEUE_V1)
-            {
-                self.queue_task = Some(spawn_queue_watch(cx, handle, chat_id));
-            }
-        }
         cx.notify();
     }
 
     fn reconcile_change_request_watches(&mut self, cx: &mut Context<Self>) {
-        let Some(handle) = self.engine.clone() else {
+        let Some(_) = self.registry.as_ref() else {
             self.change_request_tasks.clear();
             return;
         };
@@ -1776,6 +1676,9 @@ impl AppState {
             if self.change_request_tasks.contains_key(&target) {
                 continue;
             }
+            let Ok(handle) = self.target_for_id(&target.device_id) else {
+                continue;
+            };
             let task = spawn_change_request_watch(
                 cx,
                 handle.clone(),
@@ -1808,11 +1711,7 @@ impl AppState {
         let Some(link) = self.pending_deep_link.clone() else {
             return;
         };
-        let Some(locator) = crate::links::workspace_locator(
-            self.workspace_scope,
-            self.auth.as_ref(),
-            self.local_device_id.as_deref(),
-        ) else {
+        let Some(locator) = crate::links::workspace_locator(self.local_device_id.as_deref()) else {
             return;
         };
         if locator != link.workspace {
@@ -1873,9 +1772,15 @@ impl AppState {
             }
             self.mark_chat_seen(id, cx);
         }
-        if let (Some(chat_id), Some(handle)) = (chat_id, self.engine.clone()) {
-            self.transcript_task =
-                Some(spawn_transcript_watch(cx, handle.clone(), chat_id.clone()));
+        if let Some(chat_id) = chat_id
+            && let Ok(handle) = self.target_for_id(&chat_id)
+        {
+            self.transcript_task = Some(spawn_transcript_watch(
+                cx,
+                handle.clone(),
+                chat_id.clone(),
+                self.data_dir.clone(),
+            ));
             if handle
                 .engine_info()
                 .supports(roboco_proto::capabilities::MESSAGE_QUEUE_V1)
@@ -1892,8 +1797,10 @@ impl AppState {
     /// document itself did not change and therefore emitted no new frame.
     pub(crate) fn refresh_selected_queue(&mut self, cx: &mut Context<Self>) {
         self.queue_task = None;
-        let (Some(chat_id), Some(handle)) = (self.selected_chat.clone(), self.engine.clone())
-        else {
+        let Some(chat_id) = self.selected_chat.clone() else {
+            return;
+        };
+        let Ok(handle) = self.target_for_id(&chat_id) else {
             return;
         };
         if handle
@@ -1931,22 +1838,6 @@ impl AppState {
     /// Synced seen marker: only fires when the chat is currently unseen
     /// (idempotence — no mutate spam), stamps the local row optimistically so
     /// the LWW round-trip is invisible, and fire-and-forgets the mutate.
-    /// Window-focus liveness sweep: ask the engine to probe every open room
-    /// (workspace + chat docs). Fire-and-forget; each room ignores the hint
-    /// unless it has been broadcast-quiet ≥30s, so spamming is harmless.
-    pub fn probe_sync(&mut self, cx: &mut Context<Self>) {
-        let Some(handle) = self.engine.clone() else {
-            return;
-        };
-        cx.spawn(async move |_, _| {
-            let params = serde_json::json!({});
-            if let Err(err) = handle.client().call(methods::PROBE_SYNC, params).await {
-                tracing::debug!(error = %err, "probe sync failed");
-            }
-        })
-        .detach();
-    }
-
     pub fn mark_chat_seen(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) else {
             return;
@@ -1956,13 +1847,13 @@ impl AppState {
         }
         chat.last_seen_at = Some(Utc::now());
         cx.notify();
-        let Some(handle) = self.engine.clone() else {
+        let Ok(handle) = self.target_for_id(chat_id) else {
             return;
         };
         let chat_id = chat_id.to_string();
         cx.spawn(async move |_, _| {
             let params = serde_json::json!({ "op": "markChatSeen", "chatId": chat_id });
-            if let Err(err) = handle.client().call(methods::MUTATE, params).await {
+            if let Err(err) = handle.call(methods::MUTATE, params).await {
                 tracing::warn!(chat = %chat_id, error = %err, "markChatSeen failed");
             }
         })
@@ -1970,7 +1861,7 @@ impl AppState {
     }
 }
 
-/// Observe assembly after an early attach (cloud onboarding or another viewport
+/// Observe assembly after an early attach (another viewport
 /// reaching the embedded engine over IPC). Data subscriptions wait on the same
 /// result, but their individual errors are not authoritative: older engines may
 /// legitimately omit a watch method. Only the assembly result may fail the
@@ -1999,52 +1890,88 @@ fn spawn_deferred_engine_watch(
 /// Chats watch. Boot selection is the shell's job (it lands on the first
 /// restored open tab, device-local state this entity can't see); this task
 /// only pumps frames.
-fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<()> {
+fn spawn_registry_watch(
+    cx: &mut Context<AppState>,
+    handle: EngineHandle,
+    data_dir: Option<PathBuf>,
+) -> Task<()> {
+    let path = data_dir
+        .unwrap_or_else(|| std::env::temp_dir().join("roboco-ui-unpersisted"))
+        .join("paired-engines-v1.json");
+    let info = handle.engine_info().clone();
+    let client = handle.inner.client().clone();
+    let reconnect = match handle.mode() {
+        EngineMode::Remote { url } => Some(url),
+        EngineMode::InProcess => None,
+    };
+    let open = Tokio::spawn(cx, async move {
+        EngineRegistry::open(path, info, client, reconnect).await
+    });
     cx.spawn(async move |this, cx| {
-        // Resubscribe loop (same contract as the transcript watch): a daemon
-        // restart or RPC drop ends the stream, and a bare return here froze
-        // the sidebar until app restart — new chats, renames and archives
-        // from every device silently stopped arriving.
-        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
-        loop {
-            let mut rx = match handle
-                .client()
-                .subscribe(methods::WATCH_CHATS, serde_json::json!({}))
-                .await
-            {
-                Ok(rx) => rx,
-                Err(err) => {
-                    tracing::debug!(error = %err, "chats watch unavailable; retrying");
-                    if this.update(cx, |_, _| {}).is_err() {
-                        return;
-                    }
-                    cx.background_executor().timer(RETRY_DELAY).await;
-                    continue;
-                }
-            };
-            while let Some(value) = rx.recv().await {
-                let parsed: Vec<Chat> = match serde_json::from_value(value) {
-                    Ok(parsed) => parsed,
-                    Err(err) => {
-                        tracing::warn!(error = %err, "dropping malformed chats frame");
-                        continue;
-                    }
-                };
-                let alive = this.update(cx, |state, cx| {
-                    state.apply_chats(parsed);
-                    state.apply_pending_deep_link(cx);
-                    state.reconcile_change_request_watches(cx);
-                    cx.notify();
-                });
-                if alive.is_err() {
-                    return;
-                }
-            }
-            tracing::debug!("chats stream ended; resubscribing");
-            if this.update(cx, |_, _| {}).is_err() {
+        let registry = match open.await {
+            Ok(Ok(registry)) => registry,
+            Ok(Err(error)) => {
+                tracing::error!(%error, "engine registry could not start");
                 return;
             }
-            cx.background_executor().timer(RETRY_DELAY).await;
+            Err(error) => {
+                tracing::error!(%error, "engine registry task failed");
+                return;
+            }
+        };
+        let mut updates = registry.watch();
+        if this
+            .update(cx, |state, _| {
+                state.registry = Some(registry);
+            })
+            .is_err()
+        {
+            return;
+        }
+        loop {
+            let snapshot = updates.borrow_and_update().clone();
+            if this
+                .update(cx, |state, cx| {
+                    let projected = snapshot.projected();
+                    let chats_loaded = snapshot.engines.iter().any(|e| e.chats_loaded);
+                    let spaces_loaded = snapshot.engines.iter().any(|e| e.spaces_loaded);
+                    state.registry_snapshot = snapshot;
+                    if chats_loaded {
+                        state.apply_chats(projected.chats);
+                    }
+                    if spaces_loaded {
+                        state.apply_spaces(projected.spaces);
+                    }
+                    state.apply_devices(projected.devices);
+                    state.apply_sessions(projected.sessions);
+                    state.apply_pending_deep_link(cx);
+                    state.reconcile_change_request_watches(cx);
+                    if state.transcript_task.is_none()
+                        && let Some(id) = state.selected_chat.clone()
+                        && let Ok(target) = state.target_for_id(&id)
+                    {
+                        state.transcript_task = Some(spawn_transcript_watch(
+                            cx,
+                            target.clone(),
+                            id.clone(),
+                            state.data_dir.clone(),
+                        ));
+                        if target
+                            .engine_info()
+                            .supports(roboco_proto::capabilities::MESSAGE_QUEUE_V1)
+                        {
+                            state.queue_task = Some(spawn_queue_watch(cx, target, id));
+                        }
+                    }
+                    cx.notify();
+                })
+                .is_err()
+            {
+                return;
+            }
+            if updates.changed().await.is_err() {
+                return;
+            }
         }
     })
 }
@@ -2053,7 +1980,7 @@ pub use roboco_proto::version_triple;
 
 fn spawn_change_request_watch(
     cx: &mut Context<AppState>,
-    handle: EngineHandle,
+    handle: EngineTarget,
     target: ChangeRequestWatchKey,
     local_device_id: Option<String>,
 ) -> Task<()> {
@@ -2063,7 +1990,6 @@ fn spawn_change_request_watch(
             let params = watch_params(&target, local_device_id.as_deref());
 
             let mut subscription = match handle
-                .client()
                 .subscribe_checked(methods::WATCH_CHECKOUT_CHANGE_REQUEST, params)
                 .await
             {
@@ -2234,10 +2160,41 @@ fn spawn_local_device_probe(cx: &mut Context<AppState>, handle: EngineHandle) ->
 
 fn spawn_transcript_watch(
     cx: &mut Context<AppState>,
-    handle: EngineHandle,
+    handle: EngineTarget,
     chat_id: String,
+    data_dir: Option<PathBuf>,
 ) -> Task<()> {
+    // NB: `data_dir` arrives by value — reading the entity here (`cx.entity()`)
+    // would double-lease it, since every caller runs inside an AppState update.
+    let cache = data_dir
+        .as_deref()
+        .map(crate::engine_cache::EngineCache::new);
+    let engine_key = handle.key().0.clone();
+    let raw_chat = ScopedId::parse(&chat_id).ok().map(|id| id.raw_id);
     cx.spawn(async move |this, cx| {
+        if let (Some(cache), Some(raw_chat)) = (cache.clone(), raw_chat.clone()) {
+            let key = engine_key.clone();
+            let entries = cx
+                .background_executor()
+                .spawn(async move { cache.load_transcript(&key, &raw_chat) })
+                .await;
+            if let Some(entries) = entries {
+                if this
+                    .update(cx, |state, cx| {
+                        if state.selected_chat.as_deref() == Some(chat_id.as_str())
+                            && !state.transcript_replayed
+                        {
+                            state.apply_transcript(entries);
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }
+        let mut last_cache_write = std::time::Instant::now() - std::time::Duration::from_secs(1);
         // Outer loop: a delta desync (missed frame) resubscribes immediately
         // and the fresh stream's opening reset heals the copy; a subscribe
         // failure, malformed frame, or stream end retries on a delay. Every
@@ -2250,8 +2207,7 @@ fn spawn_transcript_watch(
         'resubscribe: loop {
             let params = serde_json::json!({ "chatId": chat_id });
             let mut rx = match handle
-                .client()
-                .subscribe(methods::WATCH_DOC_MESSAGES, params)
+                .subscribe_checked(methods::WATCH_DOC_MESSAGES, params)
                 .await
             {
                 Ok(rx) => rx,
@@ -2265,7 +2221,7 @@ fn spawn_transcript_watch(
                 }
             };
             while let Some(value) = rx.recv().await {
-                let update: roboco_doc::TranscriptUpdate = match serde_json::from_value(value) {
+                let mut update: roboco_doc::TranscriptUpdate = match serde_json::from_value(value) {
                     Ok(frame) => frame,
                     Err(err) => {
                         // Schema skew (a newer peer's entry shape arriving
@@ -2277,6 +2233,7 @@ fn spawn_transcript_watch(
                         continue 'resubscribe;
                     }
                 };
+                crate::engine_registry::scope_transcript_frame(handle.key(), &mut update);
                 let roboco_doc::TranscriptUpdate {
                     frame,
                     context_usage: usage,
@@ -2293,7 +2250,17 @@ fn spawn_transcript_watch(
                             tracing::warn!(%chat_id, error = %err, "resubscribing transcript");
                             desync = true;
                         }
+                        let complete = state.transcript.last().is_none_or(|entry| {
+                            entry.status != Some(roboco_doc::MessageStatus::Streaming)
+                        });
+                        if !desync
+                            && (complete
+                                || last_cache_write.elapsed() >= std::time::Duration::from_secs(1))
+                        {
+                            return Some(state.transcript.clone());
+                        }
                     }
+                    None
                 });
                 if alive.is_err() {
                     return;
@@ -2301,12 +2268,42 @@ fn spawn_transcript_watch(
                 if desync {
                     continue 'resubscribe;
                 }
+                if let (Ok(Some(entries)), Some(cache), Some(raw_chat)) =
+                    (alive, cache.clone(), raw_chat.clone())
+                {
+                    let key = engine_key.clone();
+                    if let Err(error) = cx
+                        .background_executor()
+                        .spawn(async move { cache.save_transcript(&key, &raw_chat, &entries) })
+                        .await
+                    {
+                        tracing::debug!(%error, "transcript cache write failed");
+                    }
+                    last_cache_write = std::time::Instant::now();
+                }
             }
             // Stream ended: engine restart, RPC drop, or chat purge. Retry;
             // the purge case is cleaned up by apply_chats dropping this task.
             tracing::debug!(%chat_id, "transcript stream ended; resubscribing");
-            if this.update(cx, |_, _| {}).is_err() {
+            let final_entries = this.update(cx, |state, _| {
+                (state.selected_chat.as_deref() == Some(chat_id.as_str())
+                    && state.transcript_replayed)
+                    .then(|| state.transcript.clone())
+            });
+            if final_entries.is_err() {
                 return;
+            }
+            if let (Ok(Some(entries)), Some(cache), Some(raw_chat)) =
+                (final_entries, cache.clone(), raw_chat.clone())
+            {
+                let key = engine_key.clone();
+                if let Err(error) = cx
+                    .background_executor()
+                    .spawn(async move { cache.save_transcript(&key, &raw_chat, &entries) })
+                    .await
+                {
+                    tracing::debug!(%error, "transcript cache write failed");
+                }
             }
             cx.background_executor().timer(RETRY_DELAY).await;
         }
@@ -2319,7 +2316,7 @@ fn spawn_transcript_watch(
 /// has already sent.
 fn spawn_queue_watch(
     cx: &mut Context<AppState>,
-    handle: EngineHandle,
+    handle: EngineTarget,
     chat_id: String,
 ) -> Task<()> {
     #[derive(serde::Deserialize)]
@@ -2332,8 +2329,7 @@ fn spawn_queue_watch(
         'resubscribe: loop {
             let params = serde_json::json!({ "chatId": chat_id });
             let mut rx = match handle
-                .client()
-                .subscribe(methods::WATCH_QUEUE, params)
+                .subscribe_checked(methods::WATCH_QUEUE, params)
                 .await
             {
                 Ok(rx) => rx,
@@ -2378,7 +2374,7 @@ fn spawn_queue_watch(
 /// subagent tab can outlive chat switches.
 fn spawn_subagent_watch(
     cx: &mut Context<AppState>,
-    handle: EngineHandle,
+    handle: EngineTarget,
     doc_id: String,
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {
@@ -2386,8 +2382,7 @@ fn spawn_subagent_watch(
         'resubscribe: loop {
             let params = serde_json::json!({ "chatId": doc_id });
             let mut rx = match handle
-                .client()
-                .subscribe(methods::WATCH_DOC_MESSAGES, params)
+                .subscribe_checked(methods::WATCH_DOC_MESSAGES, params)
                 .await
             {
                 Ok(rx) => rx,
@@ -2401,7 +2396,7 @@ fn spawn_subagent_watch(
                 }
             };
             while let Some(value) = rx.recv().await {
-                let frame: TranscriptFrame = match serde_json::from_value(value) {
+                let mut update: roboco_doc::TranscriptUpdate = match serde_json::from_value(value) {
                     Ok(frame) => frame,
                     Err(err) => {
                         tracing::warn!(error = %err, "malformed subagent frame; resubscribing");
@@ -2409,6 +2404,8 @@ fn spawn_subagent_watch(
                         continue 'resubscribe;
                     }
                 };
+                crate::engine_registry::scope_transcript_frame(handle.key(), &mut update);
+                let frame = update.frame;
                 let mut desync = false;
                 let alive = this.update(cx, |state, cx| {
                     // A stale pump racing a snapshot/unwatch finds no key.
@@ -2445,6 +2442,10 @@ fn spawn_subagent_watch(
 }
 
 #[cfg(test)]
+#[path = "state/cache_tests.rs"]
+mod cache_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeDelta;
@@ -2452,7 +2453,7 @@ mod tests {
     use roboco_engine::{EngineCore, default_registry};
     // `SessionStatus` is only needed to build the fixtures below — the module
     // itself derives everything through `roboco_proto::view`.
-    use roboco_proto::{SessionStatus, UserProfile};
+    use roboco_proto::SessionStatus;
 
     /// A localhost port that was just free (bind :0, read, drop).
     async fn free_port() -> u16 {
@@ -2505,24 +2506,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_daemon_identity_falls_back_to_synced_scope() {
-        let client = memory_client(Arc::new(LegacyIdentityRpc));
-
-        let info = query_engine_info(&client).await.unwrap();
-
-        assert_eq!(info.device_id, "legacy-device");
-        assert_eq!(info.workspace_scope, WorkspaceScope::Synced);
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(info.workspace_scope),
-                Some(&AuthState::SignedOut),
-            ),
-            GatePhase::SignIn
-        );
-    }
-
-    #[tokio::test]
     async fn remote_viewport_treats_legacy_daemon_as_ready() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -2534,10 +2517,7 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
+
             default_harness: HarnessId::Mock,
         })
         .await
@@ -2564,10 +2544,7 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: free_port().await,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None, // offline
-            org_id: None,
-            workos_client_id: None,
+
             default_harness: HarnessId::Mock,
         })
         .await
@@ -2602,10 +2579,7 @@ mod tests {
         let error = match EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
+
             default_harness: HarnessId::Mock,
         })
         .await
@@ -2658,10 +2632,7 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
+
             default_harness: HarnessId::Mock,
         })
         .await
@@ -2696,10 +2667,7 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None, // offline
-            org_id: None,
-            workos_client_id: None,
+
             default_harness: HarnessId::Mock,
         })
         .await
@@ -2738,10 +2706,7 @@ mod tests {
         let config = EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None, // offline
-            org_id: None,
-            workos_client_id: None,
+
             default_harness: HarnessId::Mock,
         };
         let (a, b) = tokio::join!(
@@ -2798,10 +2763,7 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
+
             default_harness: HarnessId::Mock,
         })
         .await
@@ -2820,110 +2782,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_bootstrap_opens_local_data_without_sign_in() {
-        let dir = tempfile::tempdir().unwrap();
-        let handle = EngineHandle::bootstrap(EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: free_port().await,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
-            default_harness: HarnessId::Mock,
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(handle.engine_info().workspace_scope, WorkspaceScope::Local);
-        let info: EngineInfo = handle
-            .client()
-            .call_as(methods::ENGINE_INFO, serde_json::json!({}))
-            .await
-            .unwrap();
-        assert_eq!(info, *handle.engine_info());
-
-        let mut auth = handle
-            .client()
-            .subscribe(methods::AUTH_STATUS, serde_json::json!({}))
-            .await
-            .unwrap();
-        assert_eq!(
-            parse_auth_state(&auth.recv().await.unwrap()),
-            Some(AuthState::SignedOut)
-        );
-        let harnesses = handle
-            .client()
-            .call(methods::LIST_HARNESSES, serde_json::json!({}))
-            .await
-            .expect("local data RPC is immediately available");
-        assert!(harnesses.as_array().is_some_and(|items| !items.is_empty()));
-        assert!(
-            !dir.path().join("orgs/dev-org/dev-user").exists(),
-            "production boot must not create dev-user data"
-        );
-        assert!(dir.path().join("profiles/local").is_dir());
-        handle.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn engine_info_is_available_while_cloud_onboarding_is_deferred() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("session.json"),
-            r#"{"refreshToken":"saved","user":{"id":"user_1","email":"u@example.com"}}"#,
-        )
-        .unwrap();
-        let handle = EngineHandle::bootstrap(EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: free_port().await,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
-            default_harness: HarnessId::Mock,
-        })
-        .await
-        .unwrap();
-
-        assert!(matches!(
-            handle
-                .deferred_state()
-                .expect("embedded lifecycle")
-                .borrow()
-                .clone(),
-            DeferredEngineState::Waiting
-        ));
-
-        let info: EngineInfo = handle
-            .client()
-            .call_as(methods::ENGINE_INFO, serde_json::json!({}))
-            .await
-            .expect("EngineInfo bypasses deferred cloud stores");
-        assert_eq!(info.workspace_scope, WorkspaceScope::Synced);
-        assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                handle
-                    .client()
-                    .call(methods::LIST_HARNESSES, serde_json::json!({})),
-            )
-            .await
-            .is_err(),
-            "cloud data waits for organization onboarding"
-        );
-        assert!(!dir.path().join("orgs").exists());
-        handle.shutdown().await;
-    }
-
-    #[tokio::test]
     async fn bootstrap_connects_when_daemon_is_listening() {
         // Stand in for `roboco headless`: an engine served over the WS IPC port.
         let daemon_dir = tempfile::tempdir().unwrap();
-        let core = EngineCore::assemble(
-            daemon_dir.path(),
+        let core = EngineCore::assemble_with_profile(
+            roboco_engine::EngineProfile::local(daemon_dir.path()).unwrap(),
             Arc::new(default_registry()),
             HarnessId::Mock,
-            None,
         )
         .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2934,10 +2799,7 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: ui_dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
+
             default_harness: HarnessId::Mock,
         })
         .await
@@ -2948,10 +2810,7 @@ mod tests {
                 url: format!("ws://127.0.0.1:{port}")
             }
         );
-        assert_eq!(
-            handle.engine_info().workspace_scope,
-            WorkspaceScope::Development
-        );
+        assert_eq!(handle.engine_info().workspace_scope, WorkspaceScope::Local);
         let harnesses = handle
             .client()
             .call(methods::LIST_HARNESSES, serde_json::json!({}))
@@ -3034,53 +2893,6 @@ mod tests {
             status: None,
             continuation_of: None,
         }
-    }
-
-    #[test]
-    fn transcript_revision_tracks_replay_echoes_and_subagent_content() {
-        let mut state = AppState::new();
-        state.selected_chat = Some("c".into());
-        let initial = state.transcript_revision;
-        state.apply_transfers(Vec::new());
-        state.apply_auth(AuthState::SignedOut);
-        assert_eq!(
-            state.transcript_revision, initial,
-            "unrelated notifications are inert"
-        );
-
-        state.push_echo("c", user_entry("m1"));
-        let echo = state.transcript_revision;
-        assert_ne!(echo, initial);
-        state.push_echo("c", user_entry("m1"));
-        state.remove_echo("c", "absent");
-        assert_eq!(
-            state.transcript_revision, echo,
-            "unchanged echoes do not invalidate"
-        );
-        state.apply_transcript(vec![user_entry("m1")]);
-        assert!(state.pending_echoes().is_empty());
-        assert_ne!(
-            state.transcript_revision, echo,
-            "echo-to-replay handoff invalidates"
-        );
-
-        let before_reset = state.transcript_revision;
-        state
-            .apply_transcript_frame(TranscriptFrame::Reset { reset: Vec::new() })
-            .unwrap();
-        assert!(state.transcript_replayed);
-        assert_ne!(
-            state.transcript_revision, before_reset,
-            "empty replay is authoritative"
-        );
-
-        let before_subagent = state.transcript_revision;
-        state.set_subagent_snapshot("sub".into(), vec![user_entry("nested")]);
-        assert_ne!(state.transcript_revision, before_subagent);
-        let before_close = state.transcript_revision;
-        state.unwatch_subagent_doc("sub");
-        assert!(state.sub_transcript("sub").is_empty());
-        assert_ne!(state.transcript_revision, before_close);
     }
 
     fn device(id: &str, name: &str) -> Device {
@@ -3758,119 +3570,6 @@ mod tests {
         assert!(state.transcript_replayed);
     }
 
-    #[test]
-    fn gate_phases() {
-        let user = UserProfile {
-            id: "u".into(),
-            email: "w@example.com".into(),
-            name: None,
-        };
-        assert_eq!(
-            gate_phase(&ConnectionStatus::Connecting, None, None),
-            GatePhase::Loading
-        );
-        assert_eq!(
-            gate_phase(&ConnectionStatus::Failed("boom".into()), None, None),
-            GatePhase::Failed("boom".into())
-        );
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Local),
-                Some(&AuthState::SignedOut),
-            ),
-            GatePhase::Ready
-        );
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::SignedOut),
-            ),
-            GatePhase::SignIn
-        );
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::SignedIn {
-                    user: user.clone(),
-                    org_id: None
-                })
-            ),
-            GatePhase::Ready
-        );
-        // No org yet → org gate.
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::NeedsOrganization { user })
-            ),
-            GatePhase::OrgGate
-        );
-    }
-
-    #[test]
-    fn auth_changes_do_not_change_a_local_runtime_scope_or_watches() {
-        let mut state = AppState::new();
-        state.workspace_scope = Some(WorkspaceScope::Local);
-        state.watch_tasks.push(Task::ready(()));
-
-        state.apply_auth(AuthState::NeedsOrganization {
-            user: UserProfile {
-                id: "u".into(),
-                email: "w@example.com".into(),
-                name: None,
-            },
-        });
-        assert_eq!(state.workspace_scope, Some(WorkspaceScope::Local));
-        assert_eq!(state.watch_tasks.len(), 1);
-
-        state.apply_auth(AuthState::SignedIn {
-            user: UserProfile {
-                id: "u".into(),
-                email: "w@example.com".into(),
-                name: None,
-            },
-            org_id: Some("org-1".into()),
-        });
-        assert_eq!(state.workspace_scope, Some(WorkspaceScope::Local));
-        assert_eq!(state.watch_tasks.len(), 1);
-    }
-
-    #[test]
-    fn auth_frames_parse_both_wire_shapes() {
-        // Proto shape.
-        let proto = serde_json::json!({ "state": "signedOut" });
-        assert_eq!(parse_auth_state(&proto), Some(AuthState::SignedOut));
-        // Engine shape (`_tag`, PascalCase, orgId).
-        let engine = serde_json::json!({
-            "_tag": "SignedIn",
-            "user": { "id": "u1", "email": "w@example.com" },
-            "orgId": "org-1",
-        });
-        let Some(AuthState::SignedIn { user, org_id }) = parse_auth_state(&engine) else {
-            panic!("expected SignedIn");
-        };
-        assert_eq!(user.email, "w@example.com");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
-        let needs = serde_json::json!({
-            "_tag": "NeedsOrganization",
-            "user": { "id": "u1", "email": "w@example.com", "name": "W" },
-        });
-        assert!(matches!(
-            parse_auth_state(&needs),
-            Some(AuthState::NeedsOrganization { .. })
-        ));
-        // Garbage → None (frame dropped, not a crash).
-        assert_eq!(
-            parse_auth_state(&serde_json::json!({ "_tag": "Wat" })),
-            None
-        );
-        assert_eq!(parse_auth_state(&serde_json::json!(42)), None);
-    }
-
     fn chat_with_cwd(id: &str, created_min: i64, cwd: Option<&str>) -> Chat {
         let mut c = chat(id, created_min, None);
         c.cwd = cwd.map(str::to_string);
@@ -3946,36 +3645,6 @@ mod tests {
         assert_eq!(chat_location(&c), None);
         c.branch = None;
         assert_eq!(chat_location(&c), None);
-    }
-
-    #[test]
-    fn org_gate_reducers() {
-        assert!(org_name_valid("Acme"));
-        assert!(org_name_valid("  padded  "));
-        assert!(!org_name_valid(""));
-        assert!(!org_name_valid("   "));
-        assert!(!org_name_valid(&"x".repeat(65)));
-
-        let rows = parse_orgs(&serde_json::json!({ "orgs": [
-            { "id": "m2", "organizationId": "o2", "name": "beta" },
-            { "id": "m1", "organizationId": "o1", "name": "Alpha" },
-            { "id": "m3", "organizationId": "o1", "name": "Alpha" },
-        ]}));
-        assert_eq!(rows.len(), 3);
-        let sorted = sort_memberships(rows);
-        let names: Vec<&str> = sorted.iter().map(|o| o.name.as_str()).collect();
-        assert_eq!(
-            names,
-            ["Alpha", "beta"],
-            "case-insensitive sort + dedupe by org id"
-        );
-        // Bare-array replies parse too; garbage yields empty.
-        assert_eq!(
-            parse_orgs(&serde_json::json!([{ "id": "m", "organizationId": "o", "name": "n" }]))
-                .len(),
-            1
-        );
-        assert!(parse_orgs(&serde_json::json!("nope")).is_empty());
     }
 
     #[test]

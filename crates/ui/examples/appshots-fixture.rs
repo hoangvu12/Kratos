@@ -62,7 +62,6 @@ fn main() -> anyhow::Result<()> {
             &temp.path().join("engine"),
             Arc::new(roboco_engine::default_registry()),
             roboco_proto::HarnessId::ClaudeCode,
-            None,
         )
     })?;
     core.workspace
@@ -76,10 +75,10 @@ fn main() -> anyhow::Result<()> {
     let boot = EngineBootConfig {
         data_dir: data.clone(),
         ipc_port,
-        edge_url: String::new(),
-        edge_token: None,
-        org_id: None,
-        workos_client_id: None,
+
+
+
+
         default_harness: roboco_proto::HarnessId::ClaudeCode,
     };
     let handle = runtime.block_on(state::EngineHandle::bootstrap(boot.clone()))?;

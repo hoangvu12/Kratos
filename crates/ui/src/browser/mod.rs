@@ -246,14 +246,13 @@ impl BrowserSurface {
     /// checkout change cannot leave this tab discovering the previous project.
     pub fn watch_previews(
         &mut self,
-        handle: crate::state::EngineHandle,
+        handle: crate::engine_registry::EngineTarget,
         chat_id: String,
         cx: &mut Context<Self>,
     ) {
         self.previews_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 let subscription = handle
-                    .client()
                     .subscribe(
                         roboco_rpc::methods::WATCH_PREVIEWS,
                         serde_json::json!({"chatId": chat_id}),
@@ -261,9 +260,13 @@ impl BrowserSurface {
                     .await;
                 if let Ok(mut updates) = subscription {
                     while let Some(value) = updates.recv().await {
-                        if let Ok(snapshot) =
+                        if let Ok(mut snapshot) =
                             serde_json::from_value::<roboco_proto::PreviewSnapshot>(value)
                         {
+                            if !handle.key().is_local() {
+                                snapshot.remote = true;
+                                snapshot.error = Some("Open this engine preview through a tunnel URL".into());
+                            }
                             if this
                                 .update(cx, |this, cx| {
                                     #[cfg(target_os = "macos")]

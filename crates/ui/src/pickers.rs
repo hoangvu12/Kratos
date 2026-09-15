@@ -49,7 +49,8 @@ use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::motion;
 use crate::popover::{self, Loadable, MenuKey};
 use crate::settings::composer::ComposerDefaults;
-use crate::state::{AppState, EngineHandle};
+use crate::state::AppState;
+use crate::engine_registry::EngineTarget;
 use crate::theme::Theme;
 
 /// Dev/testing knob: `ROBOCO_SLOW_CATALOG_MS=<ms>` delays every harness and
@@ -693,8 +694,8 @@ impl Pickers {
         self.state.read(cx).selected_chat.is_some()
     }
 
-    fn engine(&self, cx: &App) -> Option<EngineHandle> {
-        self.state.read(cx).engine().cloned()
+    fn engine(&self, cx: &App) -> Option<EngineTarget> {
+        crate::request_routing::selected_target(self.state.read(cx)).ok()
     }
 
     /// The selected target device when it differs from the connected
@@ -1059,7 +1060,6 @@ impl Pickers {
                 );
             }
             let result = engine
-                .client()
                 .call(methods::LIST_HARNESSES, serde_json::Value::Object(params))
                 .await;
             if let Some(delay) = slow_catalog_delay() {
@@ -1142,7 +1142,6 @@ impl Pickers {
             let mut attempt = 1_u64;
             let result = loop {
                 let result = engine
-                    .client()
                     .call(methods::LIST_MODELS, params.clone())
                     .await;
                 if result.is_ok() || harness != HarnessId::Opencode || attempt >= 3 {
@@ -1253,7 +1252,6 @@ impl Pickers {
                 );
             }
             let result = engine
-                .client()
                 .call(methods::LIST_REFS, serde_json::Value::Object(params))
                 .await;
             this.update(cx, |pickers, cx| {
@@ -1339,7 +1337,6 @@ impl Pickers {
                 );
             }
             let result = engine
-                .client()
                 .call(methods::SWITCH_REF, serde_json::Value::Object(params))
                 .await;
             this.update(cx, |pickers, cx| {
@@ -1537,7 +1534,7 @@ impl Pickers {
                 "chatId": chat_id,
                 "config": config,
             });
-            if let Err(err) = engine.client().call(methods::MUTATE, params).await {
+            if let Err(err) = engine.call(methods::MUTATE, params).await {
                 tracing::warn!(error = %err, "setChatConfig mutate failed");
             }
         }));
@@ -4903,7 +4900,7 @@ mod tests {
         // Case-insensitive; the length indexes into the NAME's bytes.
         assert_eq!(completion_prefix_len("Documents", "doc"), Some(3));
         assert_eq!(&"Documents"[3..], "uments");
-        assert_eq!(completion_prefix_len("roboco", "roboco"), Some(5));
+        assert_eq!(completion_prefix_len("roboco", "roboco"), Some(6));
         assert_eq!(completion_prefix_len("roboco", ""), Some(0));
         assert_eq!(completion_prefix_len("roboco", "dev"), None);
         // Longer than the name → not a prefix.

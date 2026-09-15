@@ -28,7 +28,8 @@ use roboco_rpc::methods;
 
 use crate::motion::{self, AnimationExt as _, TAB_SLIDE};
 use crate::settings::{TERMINAL_MAX_VH, TERMINAL_MIN_HEIGHT};
-use crate::state::{AppState, EngineHandle};
+use crate::state::AppState;
+use crate::engine_registry::EngineTarget;
 use crate::theme::Theme;
 
 use super::emulator::{CellSnapshot, CursorSnapshot, Emulator, GridPoint, SelectionType, Side};
@@ -528,8 +529,8 @@ impl TerminalPanel {
         }
     }
 
-    fn engine(&self, cx: &App) -> Option<EngineHandle> {
-        self.state.read(cx).engine().cloned()
+    fn engine(&self, chat: &str, cx: &App) -> Option<EngineTarget> {
+        self.state.read(cx).target_for_id(chat).ok()
     }
 
     /// The chat's host device when it differs from the connected engine's own —
@@ -574,7 +575,7 @@ impl TerminalPanel {
     // ---- open / stream lifecycle ----
 
     fn open_tab(&mut self, chat: String, cx: &mut Context<Self>) {
-        let Some(engine) = self.engine(cx) else {
+        let Some(engine) = self.engine(&chat, cx) else {
             return;
         };
         self.tab_seq += 1;
@@ -607,7 +608,7 @@ impl TerminalPanel {
     fn spawn_session(
         chat: String,
         key: u64,
-        engine: EngineHandle,
+        engine: EngineTarget,
         target: Option<String>,
         cx: &mut Context<Self>,
     ) -> Task<()> {
@@ -622,7 +623,6 @@ impl TerminalPanel {
                 .unwrap_or((80, 24));
 
             let opened = engine
-                .client()
                 .call_as::<TerminalSession>(
                     methods::OPEN_TERMINAL,
                     with_target(
@@ -663,7 +663,6 @@ impl TerminalPanel {
             if !attached {
                 // Tab was closed before the open completed — release the PTY.
                 let _ = engine
-                    .client()
                     .call(
                         methods::CLOSE_TERMINAL,
                         with_target(
@@ -685,7 +684,6 @@ impl TerminalPanel {
                 let Some(after_seq) = after_seq else { return }; // tab closed
 
                 let subscribed = engine
-                    .client()
                     .subscribe(
                         methods::SUBSCRIBE_TERMINAL,
                         with_target(
@@ -746,7 +744,7 @@ impl TerminalPanel {
         &mut self,
         chat: &str,
         key: u64,
-        engine: &EngineHandle,
+        engine: &EngineTarget,
         event: TerminalEvent,
         cx: &mut Context<Self>,
     ) -> StreamDisposition {
@@ -766,7 +764,6 @@ impl TerminalPanel {
                     let data = encode_base64(&responses);
                     cx.spawn(async move |_, _| {
                         let _ = engine
-                            .client()
                             .call(
                                 methods::WRITE_TERMINAL,
                                 with_target(
@@ -828,7 +825,7 @@ impl TerminalPanel {
     }
 
     fn flush_input(&mut self, chat: String, key: u64, cx: &mut Context<Self>) {
-        let Some(engine) = self.engine(cx) else {
+        let Some(engine) = self.engine(&chat, cx) else {
             return;
         };
         let target = self.chat_target(&chat, cx);
@@ -848,7 +845,6 @@ impl TerminalPanel {
         let data = encode_base64(&tab.coalescer.take());
         cx.spawn(async move |_, _| {
             let _ = engine
-                .client()
                 .call(
                     methods::WRITE_TERMINAL,
                     with_target(
@@ -930,7 +926,7 @@ impl TerminalPanel {
         }
         tab.emulator.resize(cols, rows);
         let key = tab.key;
-        let engine = self.engine(cx);
+        let engine = self.engine(&chat, cx);
         let target = self.chat_target(&chat, cx);
         if let (Some(engine), Some(tab)) = (engine, self.tab_mut(&chat, key)) {
             let id = tab.terminal_id.clone();
@@ -952,7 +948,6 @@ impl TerminalPanel {
                 };
                 let Some(id) = stored_id.or(id) else { return };
                 let _ = engine
-                    .client()
                     .call(
                         methods::RESIZE_TERMINAL,
                         with_target(
@@ -1331,7 +1326,7 @@ impl TerminalPanel {
     }
 
     fn close_tab(&mut self, chat: &str, key: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let engine = self.engine(cx);
+        let engine = self.engine(&chat, cx);
         let target = self.chat_target(chat, cx);
         let Some(tabs) = self.chats.get_mut(chat) else {
             return;
@@ -1353,7 +1348,6 @@ impl TerminalPanel {
         if let (Some(engine), Some(id)) = (engine, tab.terminal_id.clone()) {
             cx.spawn(async move |_, _| {
                 let _ = engine
-                    .client()
                     .call(
                         methods::CLOSE_TERMINAL,
                         with_target(serde_json::json!({ "terminalId": id }), &target),

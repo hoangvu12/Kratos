@@ -827,7 +827,7 @@ impl FilesSurface {
             return;
         }
         self.sync_tree_list();
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = self.state.read(cx).target_for_id(&self.chat_id).ok() else {
             self.tree.fail_load(
                 &directory,
                 cursor,

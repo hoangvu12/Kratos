@@ -1,6 +1,6 @@
 # Roboco — fork workflow
 
-Roboco (repo/project/binary: `roboco`, app display name: `Roboco`) is a hard fork of [zeronsh/zeron](https://github.com/zeronsh/zeron) with native Windows support. `main` = upstream zeron `main` + the [Windows native support PR line](https://github.com/zeronsh/zeron/pull/313). The wasimysaid Kratos line (Mimir ACP etc.) is intentionally **not** merged here; it lives in `../Kratos`.
+Roboco (repo/project/binary: `roboco`, app display name: `Roboco`) is an independent product derived from [zeronsh/zeron](https://github.com/zeronsh/zeron), with native Windows support. [ADR 0003](docs/adr/0003-product-not-fork.md) governs selected upstream ports; [ADR 0004](docs/adr/0004-engine-local-data.md) keeps data engine-local. The wasimysaid Kratos line lives separately in `../Kratos`.
 
 ## Remotes
 
@@ -9,19 +9,20 @@ Roboco (repo/project/binary: `roboco`, app display name: `Roboco`) is a hard for
 - `kratos` → local `../Kratos` checkout (reference only)
 - `rerere` is enabled — keep it that way; rebrand conflicts repeat and get auto-resolved.
 
-## Pulling from zeron
+## Porting from zeron
 
-```bash
-git fetch upstream
-git merge upstream/main
-```
+`zeron/main` is the pristine, un-renamed mirror of `upstream/main`. Keep it content-identical to upstream; use temporary branches for cherry-picks. Never merge upstream or the mirror into Roboco `main`.
 
-Expect conflicts wherever upstream touches what we renamed. Resolution rule: take upstream's content, then re-apply the rename mapping:
+Before refreshing the mirror or porting a commit, follow [the upstream port workflow](docs/reference/upstream-ports.md). Review the selected upstream change on a mirror-derived branch, then carry its intent into a Roboco branch by hand across the rebrand and removed cloud code. Keep `rerere` enabled.
 
-- `zeron-*` crates / `zeron_*` libs → `roboco-*` / `roboco_*`
-- `apps/zeron/` → `apps/roboco/`
-- `ZERON_*` env vars → `ROBOCO_*`
-- `sh.zeron.*` bundle ids → `sh.roboco.*`, `zeron://` links → `roboco://`
+Rename mapping for retained code:
+
+- `zeron-*` crates / `zeron_*` libs -> `roboco-*` / `roboco_*`
+- `apps/zeron/` -> `apps/roboco/`
+- `ZERON_*` env vars -> `ROBOCO_*`
+- `sh.zeron.*` bundle ids -> `sh.roboco.*`, `zeron://` links -> `roboco://`
+
+Preserve the engine-local pairing architecture; upstream ports must not restore edge, WorkOS, sync rooms, or iOS.
 
 ## PRing to zeron
 
@@ -47,23 +48,21 @@ GPUI comes from our forks, pinned by rev in the root `Cargo.toml`:
 
 Custom gpui work goes on branches of `hoangvu12/zui` first, then gets pinned here by rev.
 
-## Rebrand boundaries (do not "fix" these)
+## Rebrand boundaries
 
 Still zeron-branded on purpose:
 
 - `zeronsh` org references and PR/issue links
-- `zeron.sh` / `edge.zeron.sh` URLs — the app syncs via zeron's public edge; we don't run our own
-- `apps/ios/`, `apps/landing/`, `apps/www-redirect/`, `edge/` — upstream's deployable infra
 - `docs/research/` — historical research notes
 - `ZERON_GPU_STATS` — env var owned by the zui fork, not this repo
 
 ## CI (Windows + Linux only)
 
 - `windows.yml` — Windows tests (PR + push)
-- `ui-tests.yml` — ubuntu jobs only (session sync, UI regressions, linux browser)
+- `ui-tests.yml` — ubuntu jobs only (engine-local recovery, UI regressions, linux browser)
 - `preview-tests.yml` — ubuntu (preview/proto tests)
 - `release.yml` — tag `v*`: linux x86_64+aarch64 tarballs + windows portable zip → GitHub Release with `manifest.json` (updater checksums). No macOS/iOS/R2.
-- Deleted on purpose: `deploy.yml` (zeron.sh infra), `testflight.yml` (iOS). Expect these to reappear on upstream merges — delete them again in the merge commit.
+- Keep CI focused on Roboco engine/app builds, tests, and GitHub releases. Removed cloud and iOS deployment workflows stay outside upstream ports.
 
 ## Naming conventions
 
@@ -72,3 +71,17 @@ Like zeron/Zeron: lowercase `roboco` for repo, crates, binary, package names, en
 ## Windows development
 
 See `docs/reference/windows-development.md`. Env vars use the `ROBOCO_` prefix (e.g. `ROBOCO_DATA_DIR`).
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as local markdown under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, label string equal to role name (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.

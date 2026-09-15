@@ -1,6 +1,5 @@
 //! #296 through the engine: completed tools must not park a pending ACP turn.
 //! Separate binary because the diagnostic watchdog setting is process-wide.
-use std::{sync::Arc, time::Duration};
 use roboco_doc::{
     MessagePart, MessageRole, MessageStatus, SessionCommandEntry, SessionCommandPayload,
     SessionCommandStatus,
@@ -8,6 +7,7 @@ use roboco_doc::{
 use roboco_engine::{EngineCore, HarnessRegistry};
 use roboco_harness::AcpHarness;
 use roboco_proto::{HarnessId, RunRequest, SandboxLevel, SessionStatus};
+use std::{sync::Arc, time::Duration};
 
 async fn wait_for(mut condition: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(15), async {
@@ -31,7 +31,7 @@ async fn quiet_acp_prompt_stays_working_until_response() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../harness/tests/fixtures/acp-lifecycle.py");
     registry.register(Arc::new(AcpHarness::pi().with_executable(fixture)));
-    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Pi, None).unwrap();
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Pi).unwrap();
     let chat = "acp-quiet-regression";
     let handle = core.doc_host.open(chat).unwrap();
     let doc = handle.doc();

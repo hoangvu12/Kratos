@@ -1,11 +1,7 @@
 //! `roboco daemon …` — install/manage `roboco headless` as a background service:
 //! a systemd **user** unit on Linux (the VPS deployment target), a launchd
 //! LaunchAgent on macOS. The unit runs the current executable with the
-//! `ROBOCO_*` environment captured at install time, so
-//! `ROBOCO_EDGE_URL=… roboco daemon install` bakes that override in.
-//!
-//! Auth is decoupled: without a saved session the service remains up on the
-//! local-only profile. `roboco login` and a service restart opt into sync.
+//! `ROBOCO_*` environment captured at install time. The service starts a local engine.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,7 +9,7 @@ use std::process::Command;
 use anyhow::{Context, bail};
 
 const LAUNCHD_LABEL: &str = "sh.roboco.app";
-/// Same unit name the curl|sh installer (`edge/src/install.sh`) writes, so
+/// Stable unit name used by existing installations, so
 /// `roboco daemon …` manages that installation rather than a competing copy.
 const SYSTEMD_UNIT: &str = "roboco.service";
 
@@ -23,13 +19,7 @@ const SYSTEMD_UNIT: &str = "roboco.service";
 const CAPTURED_ENV: &[&str] = &[
     "PATH",
     "ROBOCO_DATA_DIR",
-    "ROBOCO_EDGE_URL",
-    "ROBOCO_EDGE_TOKEN",
-    "ROBOCO_ORG_ID",
-    "ROBOCO_WORKOS_CLIENT_ID",
-    "ROBOCO_WORKOS_API_BASE",
     "ROBOCO_IPC_PORT",
-    "ROBOCO_CALLBACK_PORT",
     "ROBOCO_HARNESS",
     "ROBOCO_DEVICE_NAME",
     "RUST_LOG",
@@ -69,9 +59,6 @@ pub fn install(data_dir: &Path) -> anyhow::Result<()> {
     } else {
         bail!("roboco daemon is only supported on macOS (launchd) and Linux (systemd)");
     }
-    println!(
-        "Without a saved account the engine stays local-only; sign-in and restart are optional for sync."
-    );
     println!(
         "Logs: {}",
         if cfg!(target_os = "macos") {
@@ -402,18 +389,6 @@ mod tests {
     }
 
     #[test]
-    fn curl_installer_always_starts_the_local_capable_service() {
-        // Git for Windows can check out this source fixture with CRLF. These
-        // assertions cover the installer directives, not checkout line endings.
-        let installer = include_str!("../../../edge/src/install.sh").replace("\r\n", "\n");
-        assert!(!installer.contains("session.json"));
-        assert!(installer.contains("StartLimitIntervalSec=60\n"));
-        assert!(installer.contains("StartLimitBurst=5\n"));
-        assert!(installer.contains("systemctl --user enable roboco"));
-        assert!(installer.contains("systemctl --user restart roboco"));
-    }
-
-    #[test]
     fn installed_exe_uses_the_current_symlink() {
         // Installer-managed binary (current_exe resolves the `current` symlink to
         // the versioned dir): the unit must point back at the symlink.
@@ -448,7 +423,8 @@ mod tests {
         assert!(plist.contains("<string>headless</string>"));
         assert!(plist.contains("<key>SuccessfulExit</key><false/>"));
         assert!(
-            plist.contains("<key>StandardOutPath</key><string>/Users/x/.roboco/daemon.log</string>")
+            plist
+                .contains("<key>StandardOutPath</key><string>/Users/x/.roboco/daemon.log</string>")
         );
     }
 }

@@ -138,6 +138,15 @@ impl RpcClient {
         }
     }
 
+    /// Resolves when the transport stops accepting frames.
+    pub fn is_closed(&self) -> bool {
+        self.out.is_closed()
+    }
+
+    pub async fn closed(&self) {
+        self.out.closed().await;
+    }
+
     /// Unary request.
     pub async fn call(
         &self,
@@ -338,7 +347,29 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Dial a WebSocket RPC server (`ws://127.0.0.1:{ipc_port}`).
 pub async fn connect_ws(url: &str) -> Result<RpcClient, RpcError> {
-    let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url))
+    connect_ws_with_session(url, None).await
+}
+
+/// Dial a paired engine without placing its credential in the URL.
+pub async fn connect_ws_authenticated(url: &str, credential: &str) -> Result<RpcClient, RpcError> {
+    connect_ws_with_session(url, Some(credential)).await
+}
+
+async fn connect_ws_with_session(
+    url: &str,
+    credential: Option<&str>,
+) -> Result<RpcClient, RpcError> {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValue};
+    let mut request = url
+        .into_client_request()
+        .map_err(|_| RpcError::Transport("invalid engine URL".into()))?;
+    if let Some(credential) = credential {
+        let mut header = HeaderValue::from_str(&format!("Bearer {credential}"))
+            .map_err(|_| RpcError::Transport("invalid session credential".into()))?;
+        header.set_sensitive(true);
+        request.headers_mut().insert("authorization", header);
+    }
+    let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(request))
         .await
         .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
         .map_err(|e| RpcError::Transport(e.to_string()))?;

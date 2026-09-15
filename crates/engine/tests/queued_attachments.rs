@@ -145,7 +145,6 @@ async fn run_defers_until_attachment_bytes_land_then_executes_rewritten() {
         &tmp.path().join("data"),
         Arc::new(registry),
         HarnessId::Mock,
-        None,
     )
     .expect("engine core assembles");
 

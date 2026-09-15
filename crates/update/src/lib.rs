@@ -2,9 +2,9 @@
 //! background checker + `ApplyUpdate`), the CLI (`roboco update`), and the UI
 //! (the sidebar update strip + macOS bundle swap).
 //!
-//! Release layout (see `.github/workflows/release.yml` and `edge/src/install.sh`):
-//! artifacts live in the `comet-native-releases` R2 bucket, served pre-auth at
-//! `{edge}/releases/*`. `manifest.json` carries the latest version plus a
+//! Release layout (see `.github/workflows/release.yml`):
+//! artifacts are published to this repository's GitHub Releases.
+//! `manifest.json` carries the latest version plus a
 //! sha256 per artifact; `latest.txt` (version only) remains as the fallback for
 //! releases published before the manifest existed.
 //!
@@ -189,6 +189,9 @@ fn release_base(edge_url: &str) -> anyhow::Result<String> {
     #[cfg(windows)]
     if let Some(url) = windows::release_url()? {
         return Ok(url.trim_end_matches('/').to_owned());
+    }
+    if edge_url.is_empty() {
+        return Ok("https://github.com/hoangvu12/roboco/releases/latest/download".into());
     }
     Ok(format!("{}/releases", edge_url.trim_end_matches('/')))
 }
@@ -916,10 +919,13 @@ mod tests {
                 .contains("not supported on windows")
         );
         assert!(
-            apply_mac_app(&data_dir.join("Roboco.app"), &data_dir.join("Installed.app"))
-                .unwrap_err()
-                .to_string()
-                .contains("not supported on windows")
+            apply_mac_app(
+                &data_dir.join("Roboco.app"),
+                &data_dir.join("Installed.app")
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("not supported on windows")
         );
         assert!(
             restart_service()

@@ -297,7 +297,7 @@ impl FilesSurface {
             cx.notify();
             return;
         };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = self.state.read(cx).target_for_id(&self.chat_id).ok() else {
             self.search_state.loading = false;
             self.search_state.error = Some("Workspace service is still starting.".into());
             cx.notify();
@@ -395,7 +395,7 @@ impl FilesSurface {
         let Some(context) = self.request_context.clone() else {
             return;
         };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = self.state.read(cx).target_for_id(&self.chat_id).ok() else {
             return;
         };
         let mut directories = vec![String::new()];

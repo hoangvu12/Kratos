@@ -13,9 +13,11 @@ use roboco_proto::WorkspaceScope;
 use roboco_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::engine_registry::{EngineConnectionState, EngineKey, ScopedId};
 use crate::popover;
 use crate::state::AppState;
 use crate::theme::Theme;
+use gpui_tokio::Tokio;
 
 /// A device that pinged within this window shows a presence dot (engines
 /// heartbeat every 15s; 70s tolerates a couple of missed beats).
@@ -25,6 +27,29 @@ pub const DEVICE_ONLINE_WINDOW_SECS: i64 = 70;
 pub fn device_online(last_seen: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
     last_seen
         .is_some_and(|at| now.signed_duration_since(at).num_seconds() <= DEVICE_ONLINE_WINDOW_SECS)
+}
+
+/// Corner presence dot of a device row. A row backed by a known engine
+/// reports the owning engine's registry connection; any other row keeps the
+/// last-seen presence window. Pure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresenceDot {
+    /// Emerald with a soft glow — live.
+    Connected,
+    /// Amber — the engine dropped and is retrying.
+    Reconnecting,
+    /// Faint ink — off (or past the last-seen window).
+    Off,
+}
+
+pub fn presence_dot(connection: Option<&EngineConnectionState>, online: bool) -> PresenceDot {
+    match connection {
+        Some(EngineConnectionState::Connected) => PresenceDot::Connected,
+        Some(EngineConnectionState::Reconnecting) => PresenceDot::Reconnecting,
+        Some(EngineConnectionState::Off) => PresenceDot::Off,
+        None if online => PresenceDot::Connected,
+        None => PresenceDot::Off,
+    }
 }
 
 /// Compact last-seen line. Pure.
@@ -63,6 +88,9 @@ struct RenameDialog {
 pub struct DevicesPage {
     state: Entity<AppState>,
     rename: Option<RenameDialog>,
+    pairing: Entity<ComposerInput>,
+    _pairing_events: Subscription,
+    pairing_busy: bool,
     /// Device id whose id-chip shows "Copied" right now.
     copied: Option<String>,
     error: Option<SharedString>,
@@ -74,7 +102,16 @@ pub struct DevicesPage {
 impl DevicesPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        let pairing = cx.new(|cx| ComposerInput::new("Paste a pairing URL", cx));
+        let pairing_events = cx.subscribe(&pairing, |this: &mut Self, _, event, cx| {
+            if matches!(event, ComposerInputEvent::Submitted) {
+                this.pair(cx);
+            }
+        });
         Self {
+            pairing,
+            _pairing_events: pairing_events,
+            pairing_busy: false,
             state,
             rename: None,
             copied: None,
@@ -83,6 +120,59 @@ impl DevicesPage {
             copy_task: None,
             _observe: observe,
         }
+    }
+
+    fn pair(&mut self, cx: &mut Context<Self>) {
+        if self.pairing_busy {
+            return;
+        }
+        let Some(registry) = self.state.read(cx).registry().cloned() else {
+            return;
+        };
+        let url = self.pairing.read(cx).text().trim().to_string();
+        if url.is_empty() {
+            return;
+        }
+        self.pairing_busy = true;
+        self.error = None;
+        let operation = Tokio::spawn(
+            cx,
+            async move { registry.pair(&url, "Roboco desktop").await },
+        );
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = operation.await;
+            this.update(cx, |page, cx| {
+                page.pairing_busy = false;
+                match result {
+                    Ok(Ok(_)) => page
+                        .pairing
+                        .update(cx, |input, cx| input.set_text(String::new(), cx)),
+                    Ok(Err(error)) => page.error = Some(error.to_string().into()),
+                    Err(_) => page.error = Some("Pairing was interrupted".into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn forget(&mut self, key: EngineKey, cx: &mut Context<Self>) {
+        let Some(registry) = self.state.read(cx).registry().cloned() else {
+            return;
+        };
+        let operation = Tokio::spawn(cx, async move { registry.forget(&key).await });
+        cx.spawn(async move |this, cx| {
+            let result = operation.await;
+            this.update(cx, |page, cx| {
+                if !matches!(result, Ok(Ok(()))) {
+                    page.error = Some("Could not forget engine".into());
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn open_rename(&mut self, device_id: String, current: String, cx: &mut Context<Self>) {
@@ -110,7 +200,7 @@ impl DevicesPage {
             cx.notify();
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Ok(engine) = self.state.read(cx).target_for_id(&dialog.device_id) else {
             return;
         };
         let params = serde_json::json!({
@@ -119,7 +209,7 @@ impl DevicesPage {
             "name": name,
         });
         self.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::MUTATE, params).await;
+            let result = engine.call(methods::MUTATE, params).await;
             this.update(cx, |page, cx| {
                 if let Err(err) = result {
                     page.error = Some(format!("Rename failed: {err}").into());
@@ -132,7 +222,11 @@ impl DevicesPage {
     }
 
     fn copy_id(&mut self, device_id: String, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(device_id.clone()));
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            ScopedId::parse(&device_id)
+                .map(|id| id.raw_id)
+                .unwrap_or_else(|_| device_id.clone()),
+        ));
         self.copied = Some(device_id);
         self.copy_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -232,7 +326,20 @@ impl Render for DevicesPage {
             .into_iter()
             .enumerate()
             .map(|(ix, device)| {
-                let online = device_online(device.last_seen_at, now);
+                let online = self.state.read(cx).device_online(&device.id, now);
+                let engine_key = ScopedId::parse(&device.id).ok().map(|id| id.engine);
+                let connection = engine_key
+                    .as_ref()
+                    .and_then(|key| {
+                        self.state
+                            .read(cx)
+                            .registry_snapshot
+                            .engines
+                            .iter()
+                            .find(|e| &e.key == key)
+                    })
+                    .map(|e| e.state.clone());
+                let forget_key = engine_key.filter(|key| !key.is_local());
                 let is_local = local_id.as_deref() == Some(device.id.as_str());
                 let id_copied = copied.as_deref() == Some(device.id.as_str());
                 let copy_id = device.id.clone();
@@ -244,31 +351,35 @@ impl Render for DevicesPage {
                     "ios" | "android" => crate::icons::SMARTPHONE,
                     _ => crate::icons::MONITOR,
                 };
-                // Presence lives ON the identity tile: a corner dot (emerald
-                // online with a soft glow, faint offline), ringed by the card
-                // tone so it "cuts" the tile — roboco settings.devices.tsx
-                // `border-2 border-[var(--card)]` +
+                // Presence lives ON the identity tile: a corner dot ringed by
+                // the card tone so it "cuts" the tile. Engine-backed rows
+                // report the owning engine's connection (emerald glow when
+                // connected, amber while reconnecting, faint ink when off);
+                // other rows keep the last-seen window — roboco
+                // settings.devices.tsx `border-2 border-[var(--card)]` +
                 // `shadow-[0_0_6px_rgba(52,211,153,0.55)]`.
-                let tile = widgets::row_tile(&theme, platform_icon).relative().child(
-                    div()
+                let dot = presence_dot(connection.as_ref(), online);
+                let tile = widgets::row_tile(&theme, platform_icon).relative().child({
+                    let el = div()
                         .absolute()
                         .bottom(px(-3.0))
                         .right(px(-3.0))
                         .size(px(9.0))
                         .rounded_full()
                         .border_2()
-                        .border_color(theme.surface)
-                        .when(online, |el| {
-                            el.bg(emerald).shadow(vec![gpui::BoxShadow {
-                                color: emerald.opacity(0.55),
-                                offset: gpui::point(px(0.0), px(0.0)),
-                                blur_radius: px(6.0),
-                                spread_radius: px(0.0),
-                                inset: false,
-                            }])
-                        })
-                        .when(!online, |el| el.bg(crate::theme::ink(0.22))),
-                );
+                        .border_color(theme.surface);
+                    match dot {
+                        PresenceDot::Connected => el.bg(emerald).shadow(vec![gpui::BoxShadow {
+                            color: emerald.opacity(0.55),
+                            offset: gpui::point(px(0.0), px(0.0)),
+                            blur_radius: px(6.0),
+                            spread_radius: px(0.0),
+                            inset: false,
+                        }]),
+                        PresenceDot::Reconnecting => el.bg(theme.warning),
+                        PresenceDot::Off => el.bg(crate::theme::ink(0.22)),
+                    }
+                });
                 // One quiet meta line: platform · version · (offline: last
                 // seen) · id chip.
                 let mut meta: Vec<AnyElement> = vec![
@@ -282,6 +393,17 @@ impl Render for DevicesPage {
                     meta.push(
                         div()
                             .child(SharedString::from(format!("v{version}")))
+                            .into_any_element(),
+                    );
+                }
+                if let Some(connection) = connection {
+                    meta.push(
+                        div()
+                            .child(match connection {
+                                EngineConnectionState::Connected => "Connected",
+                                EngineConnectionState::Reconnecting => "Reconnecting",
+                                EngineConnectionState::Off => "Off",
+                            })
                             .into_any_element(),
                     );
                 }
@@ -324,7 +446,11 @@ impl Render for DevicesPage {
                         .child(SharedString::from(if id_copied {
                             "Copied".to_string()
                         } else {
-                            short_id(&device.id)
+                            short_id(
+                                &ScopedId::parse(&device.id)
+                                    .map(|id| id.raw_id)
+                                    .unwrap_or_else(|_| device.id.clone()),
+                            )
                         }))
                         .into_any_element(),
                 );
@@ -341,16 +467,25 @@ impl Render for DevicesPage {
                             .child(widgets::meta_line(&theme, meta)),
                     )
                     .when(is_local, |el| {
+                        el.child(widgets::badge(
+                            &theme,
+                            if workspace_scope == Some(WorkspaceScope::Local)
+                                && self.state.read(cx).registry().is_none()
+                            {
+                                "Local only"
+                            } else {
+                                "This device"
+                            },
+                        ))
+                    })
+                    .when_some(forget_key, |el, key| {
                         el.child(
-                            div()
-                                .flex_none()
-                                .text_size(px(10.5))
-                                .text_color(theme.text_muted)
-                                .child(if workspace_scope == Some(WorkspaceScope::Local) {
-                                    "Local only"
-                                } else {
-                                    "This device"
-                                }),
+                            widgets::ghost_action(&theme)
+                                .id(("engine-forget", ix))
+                                .child("Forget")
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.forget(key.clone(), cx)),
+                                ),
                         )
                     })
                     .child(
@@ -383,7 +518,7 @@ impl Render for DevicesPage {
         let card = if rows.is_empty() {
             card.child(
                 div()
-                    .px(px(20.0))
+                    .px(px(16.0))
                     .py(px(40.0))
                     .text_center()
                     .text_size(crate::typography::ui_rems(14.0))
@@ -407,19 +542,80 @@ impl Render for DevicesPage {
                     ))
                     .child(widgets::page_subtitle(
                         &theme,
-                        devices_subtitle(workspace_scope),
+                        if self.state.read(cx).registry().is_some() {
+                            "Connect and manage engines."
+                        } else {
+                            devices_subtitle(workspace_scope)
+                        },
                     ))
-                    .when_some(self.error.clone(), |el, message| {
-                        el.child(
-                            widgets::error_strip(&theme, message)
-                                .id("devices-error")
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.error = None;
-                                    cx.notify();
-                                })),
-                        )
-                    })
+                    .when_some(
+                        self.error.clone().or_else(|| {
+                            self.state
+                                .read(cx)
+                                .registry_snapshot
+                                .configuration_error
+                                .clone()
+                                .map(Into::into)
+                        }),
+                        |el, message| {
+                            el.child(
+                                widgets::error_strip(&theme, message)
+                                    .id("devices-error")
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.error = None;
+                                        cx.notify();
+                                    })),
+                            )
+                        },
+                    )
+                    .child(
+                        widgets::section_card(&theme).child(
+                            div()
+                                .px(px(16.0))
+                                .py(px(10.0))
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(12.0))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .child(popover::dialog_field(
+                                                    self.pairing.clone().into_any_element(),
+                                                )),
+                                        )
+                                        .child(
+                                            popover::btn_primary(
+                                                &theme,
+                                                if self.pairing_busy {
+                                                    "Connecting…"
+                                                } else {
+                                                    "Connect"
+                                                },
+                                            )
+                                            .id("pair-engine")
+                                            .on_click(cx.listener(
+                                                |this, _, _, cx| this.pair(cx),
+                                            )),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .mt(px(6.0))
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(theme.text_muted.opacity(0.65))
+                                        .child(SharedString::from(
+                                            "Create a pairing link in the engine's Remote access settings, then paste it here.",
+                                        )),
+                                ),
+                        ),
+                    )
                     .child(card),
             )
             .when_some(dialog, |el, dialog| el.child(dialog))
@@ -462,6 +658,22 @@ mod tests {
             format_last_seen(Some(now - TimeDelta::days(2)), now),
             "2d ago"
         );
+    }
+
+    #[test]
+    fn presence_dot_prefers_the_engine_connection_state() {
+        use crate::engine_registry::EngineConnectionState::*;
+        // Engine-backed rows report the registry connection, whatever the
+        // last-seen window says.
+        assert_eq!(presence_dot(Some(&Connected), false), PresenceDot::Connected);
+        assert_eq!(
+            presence_dot(Some(&Reconnecting), false),
+            PresenceDot::Reconnecting
+        );
+        assert_eq!(presence_dot(Some(&Off), true), PresenceDot::Off);
+        // Rows with no engine entry keep the last-seen presence window.
+        assert_eq!(presence_dot(None, true), PresenceDot::Connected);
+        assert_eq!(presence_dot(None, false), PresenceDot::Off);
     }
 
     #[test]

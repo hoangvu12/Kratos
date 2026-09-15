@@ -214,7 +214,7 @@ fn registry_with(harness: Arc<dyn Harness>) -> Arc<HarnessRegistry> {
 }
 
 fn assemble(dir: &std::path::Path, harness: Arc<dyn Harness>) -> EngineCore {
-    EngineCore::assemble(dir, registry_with(harness), HarnessId::Mock, None)
+    EngineCore::assemble(dir, registry_with(harness), HarnessId::Mock)
         .expect("engine core assembles")
 }
 
@@ -810,9 +810,9 @@ async fn retry_reissues_a_swallowed_send() {
     .await;
     wait_for(
         || {
-            entries_now(&core)
-                .iter()
-                .any(|e| e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete))
+            entries_now(&core).iter().any(|e| {
+                e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
+            })
         },
         "re-issued send runs to completion",
     )
@@ -1868,7 +1868,6 @@ async fn real_claude_sees_uploaded_image_inline() {
         &dir,
         Arc::new(roboco_engine::default_registry()),
         HarnessId::ClaudeCode,
-        None,
     )
     .expect("engine core assembles");
     // Pre-title the chat so the auto-titler doesn't spend a second model call.
@@ -2019,11 +2018,9 @@ async fn empty_reasoning_deltas_are_heartbeats_not_journal_noise() {
     );
     wait_for(
         || {
-            entries(&core)
-                .iter()
-                .any(|e| {
-                    e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
-                })
+            entries(&core).iter().any(|e| {
+                e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
+            })
         },
         "run completes",
     )

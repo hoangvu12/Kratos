@@ -1,7 +1,7 @@
 //! Stable conversation links shared by sidebar copy actions and inbound URL routing.
 
+use roboco_proto::{Chat, HarnessId};
 use sha2::{Digest, Sha256};
-use roboco_proto::{AuthState, Chat, HarnessId, WorkspaceScope};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationDeepLink {
@@ -15,29 +15,10 @@ pub struct HarnessConversationLink {
     pub url: String,
 }
 
-/// Opaque locator: enough to reject links for a different local/synced
-/// workspace without putting device, user, or organization ids in the URL.
-pub fn workspace_locator(
-    scope: Option<WorkspaceScope>,
-    auth: Option<&AuthState>,
-    local_device_id: Option<&str>,
-) -> Option<String> {
-    let scope = scope?;
-    let identity = match scope {
-        WorkspaceScope::Synced | WorkspaceScope::Development => {
-            let Some(AuthState::SignedIn { user, org_id }) = auth else {
-                return None;
-            };
-            format!(
-                "user:{}:org:{}",
-                user.id,
-                org_id.as_deref().unwrap_or("personal")
-            )
-        }
-        WorkspaceScope::Local => format!("device:{}", local_device_id?),
-    };
+/// Device-scoped locator, preserving existing local conversation URLs.
+pub fn workspace_locator(local_device_id: Option<&str>) -> Option<String> {
     let mut hash = Sha256::new();
-    hash.update(format!("{scope:?}\0{identity}"));
+    hash.update(format!("Local\0device:{}", local_device_id?));
     Some(format!("{:x}", hash.finalize())[..16].to_string())
 }
 
@@ -116,6 +97,19 @@ fn decode_component(value: &str) -> Result<String, &'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_locator_is_stable_and_device_scoped() {
+        assert_eq!(super::workspace_locator(None), None);
+        assert_eq!(
+            super::workspace_locator(Some("device-a")),
+            super::workspace_locator(Some("device-a"))
+        );
+        assert_ne!(
+            super::workspace_locator(Some("device-a")),
+            super::workspace_locator(Some("device-b"))
+        );
+    }
+
     use super::*;
 
     fn harness_chat(harness: HarnessId) -> Chat {
@@ -163,57 +157,6 @@ mod tests {
         assert!(parse_roboco_conversation_link("https://example.com").is_err());
         assert!(parse_roboco_conversation_link("roboco://open/chat/id").is_err());
         assert!(parse_roboco_conversation_link("roboco://open/chat/%GG?workspace=x").is_err());
-    }
-
-    #[test]
-    fn local_workspace_locator_waits_for_device_identity() {
-        assert_eq!(
-            workspace_locator(Some(WorkspaceScope::Local), None, None),
-            None
-        );
-        let first = workspace_locator(Some(WorkspaceScope::Local), None, Some("device-a"));
-        let second = workspace_locator(Some(WorkspaceScope::Local), None, Some("device-b"));
-        assert!(first.is_some());
-        assert_ne!(first, second);
-    }
-
-    #[test]
-    fn synced_workspace_locator_waits_for_signed_in_identity() {
-        let scope = Some(WorkspaceScope::Synced);
-        assert_eq!(workspace_locator(scope, None, Some("device-a")), None);
-        assert_eq!(
-            workspace_locator(scope, Some(&AuthState::SignedOut), Some("device-a")),
-            None
-        );
-        assert_eq!(
-            workspace_locator(
-                scope,
-                Some(&AuthState::NeedsOrganization {
-                    user: roboco_proto::UserProfile {
-                        id: "user-a".into(),
-                        email: "user@example.com".into(),
-                        name: None,
-                    },
-                }),
-                Some("device-a"),
-            ),
-            None
-        );
-        assert!(
-            workspace_locator(
-                scope,
-                Some(&AuthState::SignedIn {
-                    user: roboco_proto::UserProfile {
-                        id: "user-a".into(),
-                        email: "user@example.com".into(),
-                        name: None,
-                    },
-                    org_id: Some("org-a".into()),
-                }),
-                None,
-            )
-            .is_some()
-        );
     }
 
     #[test]

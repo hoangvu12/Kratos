@@ -28,6 +28,12 @@ chrono.workspace = true
 notify.workspace = true
 portable-pty.workspace = true
 base64 = "0.22"
+getrandom = "0.3"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+tokio-tungstenite.workspace = true
 libc.workspace = true
 gethostname.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
@@ -43,5 +49,3 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [dev-dependencies]
 tokio-tungstenite.workspace = true
-# In-process registry server for the two-engine workspace integration tests.
-roboco-sync = { workspace = true, features = ["mock-server"] }

@@ -2106,7 +2106,7 @@ impl GitHistory {
         let Some((key, cwd, target)) = self.context(cx) else {
             return;
         };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         self.fetching_all = true;
@@ -2120,7 +2120,6 @@ impl GitHistory {
                 params.insert("targetDeviceId".into(), serde_json::Value::String(target));
             }
             let result = engine
-                .client()
                 .call(methods::FETCH_ALL, serde_json::Value::Object(params))
                 .await;
             this.update(cx, |history, cx| {
@@ -2465,7 +2464,7 @@ impl GitHistory {
         let Some((key, cwd, target)) = self.context(cx) else {
             return;
         };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         let generation = self.search_generation;
@@ -2485,7 +2484,6 @@ impl GitHistory {
                 params.insert("targetDeviceId".into(), serde_json::Value::String(target));
             }
             let result = engine
-                .client()
                 .call(
                     methods::SEARCH_GIT_HISTORY,
                     serde_json::Value::Object(params),
@@ -2586,7 +2584,7 @@ impl GitHistory {
         if authors.is_empty() {
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         let mut params = serde_json::Map::new();
@@ -2599,7 +2597,6 @@ impl GitHistory {
         }
         cx.spawn(async move |this, cx| {
             let result = engine
-                .client()
                 .call(
                     methods::RESOLVE_GIT_AVATARS,
                     serde_json::Value::Object(params),
@@ -2650,7 +2647,7 @@ impl GitHistory {
         if self.loading {
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         self.loading = true;
@@ -2665,7 +2662,6 @@ impl GitHistory {
                 params.insert("targetDeviceId".into(), serde_json::Value::String(target));
             }
             let result = engine
-                .client()
                 .call(methods::LIST_GIT_HISTORY, serde_json::Value::Object(params))
                 .await;
             this.update(cx, |history, cx| {

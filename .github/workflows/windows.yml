@@ -67,8 +67,8 @@ jobs:
         run: cargo test --release --locked -p roboco-harness --features native-fixture --test codex_availability --test windows_native
       - name: Harness catalog tests
         run: cargo test --release --locked -p roboco-engine --test codex_catalog
-      - name: Auth integration tests
-        run: cargo test --release --locked -p roboco-engine --test auth
+      - name: Engine-local integration tests
+        run: cargo test --release --locked -p roboco-engine --test engine_local --test local_first --test local_profiles
       - name: UI tests
         run: cargo test --release --locked -p roboco-ui --lib -- --test-threads=1
       - name: CLI startup without HOME
@@ -77,7 +77,6 @@ jobs:
           # Port zero cannot connect to another running engine.
           $env:HOME = $null
           $env:ROBOCO_DATA_DIR = $null
-          $env:ROBOCO_EDGE_TOKEN = $null
           $env:ROBOCO_IPC_PORT = '0'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "roboco smoke O'Brien 日本語"
           $expected = Join-Path $env:LOCALAPPDATA 'Roboco'
@@ -87,8 +86,8 @@ jobs:
           if (-not ($output -contains "Data dir: $expected")) {
             throw 'Windows startup did not select LOCALAPPDATA/Roboco'
           }
-          if (-not ($output -match '^Mode:\s+local only$')) {
-            throw 'An isolated Windows startup must select local-only mode'
+          if (-not ($output -contains 'Engine: not running')) {
+            throw 'An isolated Windows startup must report no running engine'
           }
       - name: Build rendering fixture
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.native_gui }}

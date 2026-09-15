@@ -42,7 +42,7 @@ impl ArchivedPage {
     }
 
     fn unarchive(&mut self, chat_id: String, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some(engine) = self.state.read(cx).target_for_id(&chat_id).ok() else {
             return;
         };
         self.busy = Some(chat_id.clone());
@@ -53,7 +53,7 @@ impl ArchivedPage {
             "archived": false,
         });
         self.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::MUTATE, params).await;
+            let result = engine.call(methods::MUTATE, params).await;
             this.update(cx, |page, cx| {
                 page.busy = None;
                 if let Err(err) = result {

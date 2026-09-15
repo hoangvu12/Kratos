@@ -14,6 +14,14 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 
 use crate::{ClientFrame, RpcError, RpcReply, RpcService, ServerFrame};
 
+struct AbortTask(tokio::task::AbortHandle);
+
+impl Drop for AbortTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Serve one connection: read client frames from `inbound`, write server frames to `out`.
 /// Returns when `inbound` closes; all in-flight request tasks are aborted on exit.
 pub async fn serve_connection(
@@ -21,7 +29,7 @@ pub async fn serve_connection(
     out: mpsc::Sender<String>,
     mut inbound: mpsc::Receiver<String>,
 ) {
-    let mut running: HashMap<u64, tokio::task::AbortHandle> = HashMap::new();
+    let mut running: HashMap<u64, AbortTask> = HashMap::new();
     while let Some(payload) = inbound.recv().await {
         // ndjson: a transport may batch several frames per message.
         for line in payload.lines() {
@@ -36,10 +44,10 @@ pub async fn serve_connection(
                     continue;
                 }
             };
-            running.retain(|_, task| !task.is_finished());
+            running.retain(|_, task| !task.0.is_finished());
             if frame.cancel {
                 if let Some(task) = running.remove(&frame.id) {
-                    task.abort();
+                    task.0.abort();
                 }
                 continue;
             }
@@ -54,11 +62,11 @@ pub async fn serve_connection(
                 method,
                 frame.params,
             ));
-            running.insert(frame.id, task.abort_handle());
+            running.insert(frame.id, AbortTask(task.abort_handle()));
         }
     }
     for (_, task) in running {
-        task.abort();
+        task.0.abort();
     }
 }
 
@@ -181,6 +189,16 @@ async fn serve_ws_socket(stream: TcpStream, service: Arc<dyn RpcService>) {
             return;
         }
     };
+    serve_websocket(ws, service).await;
+}
+
+/// Run the same RPC dispatch over an already upgraded HTTP connection.
+pub async fn serve_websocket<S>(
+    ws: tokio_tungstenite::WebSocketStream<S>,
+    service: Arc<dyn RpcService>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let (mut sink, mut ws_stream) = ws.split();
     let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
@@ -213,6 +231,7 @@ async fn serve_ws_socket(stream: TcpStream, service: Arc<dyn RpcService>) {
         }
     });
 
+    let _pump_on_drop = AbortTask(pump.abort_handle());
     serve_connection(service, out_tx, in_rx).await;
     pump.abort();
 }

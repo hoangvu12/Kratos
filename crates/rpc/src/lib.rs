@@ -19,20 +19,18 @@ use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 mod client;
-pub mod device_room;
 mod server;
 
-pub use client::{RpcClient, RpcSubscription, connect_ws};
-pub use device_room::{
-    DeviceFrameHeader, DeviceLink, HostRelay, HostRelayConfig, LinkCache, LinkCacheConfig,
-    NudgeHandler, PeerLiveness, PeerLivenessProbe, StaticToken, TokenSource, decode_device_frame,
-    device_room_ws_url, encode_device_frame,
-};
-pub use server::{serve_connection, serve_ws_listener};
+pub use client::{RpcClient, RpcSubscription, connect_ws, connect_ws_authenticated};
+pub use server::{serve_connection, serve_websocket, serve_ws_listener};
 
 /// RPC method names — single source of truth for both ends.
 /// Full surface: docs/research/feature-inventory.md §2.
 pub mod methods {
+    pub const GET_REMOTE_ACCESS: &str = "GetRemoteAccess";
+    pub const SET_REMOTE_ACCESS: &str = "SetRemoteAccess";
+    pub const CREATE_PAIRING_LINK: &str = "CreatePairingLink";
+    pub const REVOKE_PAIRING_SESSION: &str = "RevokePairingSession";
     pub const WATCH_PREVIEWS: &str = "WatchPreviews";
     pub const LIST_HARNESSES: &str = "ListHarnesses";
     /// Flip a harness's enablement on the target device (Settings → Agents);
@@ -77,15 +75,6 @@ pub mod methods {
     /// Steer this row into the live turn without interrupting it.
     /// `{ chatId, id }` → `{ sent }`.
     pub const STEER_QUEUED_MESSAGE_NOW: &str = "SteerQueuedMessageNow";
-    /// Nudge every open room client to verify liveness NOW (window focus,
-    /// app foregrounded). No params; IPC-only. Each room ignores the hint
-    /// unless it has been broadcast-quiet ≥30s, so this is cheap to spam.
-    pub const PROBE_SYNC: &str = "ProbeSync";
-    /// Live sync introspection (`roboco sync` / debug surfaces): per-room
-    /// connection state, last pushed-frame/ack ages, rejoin/probe/resync
-    /// counters for the workspace room and every open chat doc. No params;
-    /// IPC-only.
-    pub const SYNC_STATUS: &str = "SyncStatus";
     /// Pushed edge-connectivity posture (`roboco_proto::Connectivity`):
     /// current value first, then every change — the connection pill /
     /// composer-honesty / queued-badge feed. No params; IPC-only.
@@ -115,15 +104,6 @@ pub mod methods {
     /// Headed IPC owners do not implement this method: closing another app's
     /// engine behind its windows would leave that process unusable.
     pub const STOP_ENGINE: &str = "StopEngine";
-    pub const AUTH_STATUS: &str = "AuthStatus";
-    // AuthRpc mutations (feature-inventory §2 AuthRpc; IPC-only).
-    pub const SIGN_IN: &str = "SignIn";
-    pub const SIGN_IN_HEADLESS: &str = "SignInHeadless";
-    pub const COMPLETE_SIGN_IN: &str = "CompleteSignIn";
-    pub const SIGN_OUT: &str = "SignOut";
-    pub const LIST_ORGS: &str = "ListOrgs";
-    pub const CREATE_ORG: &str = "CreateOrg";
-    pub const SELECT_ORG: &str = "SelectOrg";
     /// One-time local→synced profile import: what's importable (unary).
     pub const LOCAL_IMPORT_STATUS: &str = "LocalImportStatus";
     /// One-time local→synced profile import: run it (stream of progress items).
@@ -144,6 +124,7 @@ pub mod methods {
     pub const FETCH_ALL: &str = "FetchAll";
     pub const SWITCH_REF: &str = "SwitchRef";
     pub const LIST_FOLDERS: &str = "ListFolders";
+    pub const PREPARE_SPACE_PATH: &str = "PrepareSpacePath";
     /// The device's browse roots: home plus mounted drives/volumes.
     pub const LIST_DRIVES: &str = "ListDrives";
     /// Fuzzy relative-path search rooted in a known chat or space checkout.
