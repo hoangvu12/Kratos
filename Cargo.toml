@@ -126,6 +126,27 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 ignore = "0.4"
 nucleo-matcher = "0.3"
 
+# gpui-base (hoangvu12/gpui-component) still declares its GPUI crates against
+# zeronsh/zui. Redirect every crate resolving through that URL to our
+# hoangvu12/zui fork (same revision) so the graph builds exactly one GPUI copy.
+[patch."https://github.com/zeronsh/zui"]
+collections = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+derive_refineable = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+gpui = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+gpui_macros = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+gpui_platform = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+gpui_tokio = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+gpui_web = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+gpui_shared_string = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+gpui_util = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+http_client = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+media = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+perf = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+refineable = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+scheduler = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+sum_tree = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+util_macros = { git = "https://github.com/hoangvu12/zui", rev = "aa009411c2dbfb39556bff1b1febed0512fdf609" }
+
 [profile.release]
 # Distribution profile (scripts/package-linux.sh): thin LTO buys most of fat
 # LTO's size/speed win at a fraction of the link time; strip debug symbols.
