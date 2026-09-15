@@ -64,6 +64,8 @@ ttf-parser.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true
 tracing.workspace = true
 sha2.workspace = true
 roxmltree = "0.21.1"
@@ -81,7 +83,6 @@ block2 = "0.6"
 objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSBitmapImageRep", "NSImage", "NSEvent", "NSResponder", "NSView", "NSWindow"] }
 objc2-foundation = "0.3.2"
 objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "WKNavigationDelegate", "WKNavigationAction", "WKSnapshotConfiguration"] }
-reqwest.workspace = true
 core-foundation = "0.10"
 core-graphics = { version = "0.24", features = ["elcapitan", "highsierra", "link"] }
 foreign-types = "0.5"
@@ -96,7 +97,6 @@ x11rb = { version = "0.14.0", features = ["image"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-tempfile.workspace = true
 mimalloc.workspace = true
 tracing-subscriber.workspace = true
 

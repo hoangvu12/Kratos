@@ -27,6 +27,7 @@ mod composer_dock;
 mod context_usage;
 pub mod edge_fade;
 pub mod engine_cache;
+pub mod engine_registry;
 pub mod file_icons;
 pub mod files;
 pub mod frost;
