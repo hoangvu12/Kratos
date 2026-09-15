@@ -670,7 +670,6 @@ impl Engine {
             EdgeConfig::new(config.edge_url.clone(), Arc::new(auth.clone())).with_device(device_id)
         });
 
-        let preview_org = profile.org_id().to_string();
         let core = match lock {
             Some(lock) => EngineCore::assemble_with_profile_locked(
                 profile,
@@ -698,12 +697,7 @@ impl Engine {
                 .filter_map(|chat| chat.cwd.map(std::path::PathBuf::from))
                 .collect()
         });
-        let preview_signaling = edge_enabled.then(|| roboco_preview::signaling::Config {
-            edge_url: config.edge_url.clone(),
-            org_id: preview_org,
-            tokens: Arc::new(auth.clone()),
-        });
-        core.previews.start(projects, preview_signaling).await;
+        core.previews.start(projects).await;
         // Portable Windows packages explicitly configure an update feed; users
         // should not need to enable workspace sync to receive application updates.
         let check_updates = edge_enabled;

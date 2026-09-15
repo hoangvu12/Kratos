@@ -4,7 +4,7 @@ use crate::{
     discovery,
     mux::{self, BoxIo, Connector},
     peer::Peers,
-    proxy, signaling,
+    proxy,
 };
 use futures::{StreamExt, stream};
 use std::{
@@ -107,13 +107,13 @@ impl PreviewService {
     pub fn catalog(&self) -> &Catalog {
         &self.0.catalog
     }
-    pub async fn start(&self, projects: Projects, signaling: Option<signaling::Config>) {
+    pub async fn start(&self, projects: Projects) {
         if self.0.started.swap(true, Ordering::SeqCst) {
             return;
         }
         let connector = Arc::new(LocalConnector(self.0.catalog.clone()));
         let local = mux::local(connector.clone(), self.0.stop.child_token());
-        let (peers, output) = Peers::new(
+        let (peers, _output) = Peers::new(
             self.0.catalog.device_id().into(),
             connector,
             self.0.stop.child_token(),
@@ -214,15 +214,6 @@ impl PreviewService {
         });
         let mut tasks = self.0.tasks.lock().unwrap();
         tasks.push(scanner);
-        if let Some(config) = signaling {
-            tasks.push(tokio::spawn(signaling::run(
-                config,
-                self.0.catalog.clone(),
-                peers,
-                output,
-                self.0.stop.child_token(),
-            )));
-        }
     }
     pub fn stop(&self) {
         self.0.stop.cancel();

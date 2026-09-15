@@ -1181,10 +1181,3 @@ mod tests {
         );
     }
 }
-
-#[async_trait::async_trait]
-impl roboco_preview::signaling::TokenSource for Auth {
-    async fn token(&self) -> Option<String> {
-        self.access_token().await
-    }
-}
