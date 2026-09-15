@@ -41,14 +41,7 @@
 //!
 //! ## Device-addressed routing (`targetDeviceId`, feature-inventory §2.1)
 //!
-//! ControlRpc methods are relay-forwardable: params may carry `targetDeviceId`. When it
-//! names another device, the call is forwarded verbatim over that device's relay DO via
-//! the [`LinkCache`] — the remote engine sees its own id and handles locally, so the
-//! forward can never loop. Streaming methods are proxied by re-subscribing remotely and
-//! piping items. To make another method device-addressable, nothing per-method is needed
-//! beyond listing it in [`forwardable`] (and [`is_stream_method`] if it streams);
-//! handlers stay transport-agnostic. This includes the workspace file surface,
-//! whose checkout always lives on the routed target device.
+//! Requests with a target device must arrive on that engine's own connection.
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -800,124 +793,6 @@ impl EngineRpc {
     }
 }
 
-/// An RPC rejection is scoped to the requested capability. Only a broken
-/// transport means the shared device link itself cannot carry other calls.
-fn should_invalidate_link(error: &RpcError) -> bool {
-    matches!(error, RpcError::Closed | RpcError::Transport(_))
-}
-
-/// Reply deadline for a relay-forwarded unary call. The relay is WebSocket
-/// frames through a DO: a dropped frame (host socket replaced mid-call, DO
-/// restart) loses the reply SILENTLY — the DO's auto-pong keeps the client
-/// socket looking healthy — and an unbounded await wedged callers forever
-/// (the composer's permanent "Sending…", 2026-08-18). Network-bound git and
-/// update methods get a long leash; worktree creation checks out a full tree;
-/// everything else is interactive and must fail fast.
-fn forward_deadline(method: &str) -> std::time::Duration {
-    use std::time::Duration;
-    match method {
-        methods::CLONE_REPO | methods::FETCH_ALL | methods::APPLY_UPDATE => {
-            Duration::from_secs(15 * 60)
-        }
-        methods::CREATE_WORKTREE => Duration::from_secs(120),
-        _ => Duration::from_secs(30),
-    }
-}
-
-/// ControlRpc methods that honor `targetDeviceId` (feature-inventory §2.1). Extend this
-/// list (plus [`is_stream_method`] for streams) to make more of the surface
-/// device-addressable — the handlers themselves need no changes.
-fn forwardable(method: &str) -> bool {
-    matches!(
-        method,
-        methods::LIST_HARNESSES
-            | methods::GET_TITLE_SETTINGS
-            | methods::SET_TITLE_SETTINGS
-            | methods::SET_HARNESS_ENABLED
-            | methods::LIST_MODELS
-            | methods::LIST_COMMANDS
-            | methods::QUEUE_COMMAND
-            | methods::WATCH_DOC_MESSAGES
-            // The queue lives on the chat doc, and only its host may send from
-            // it — same addressing as the command ledger next door.
-            | methods::WATCH_QUEUE
-            | methods::QUEUE_MESSAGE
-            | methods::UPDATE_QUEUED_MESSAGE
-            | methods::BEGIN_QUEUED_MESSAGE_EDIT
-            | methods::RENEW_QUEUED_MESSAGE_EDIT
-            | methods::FINISH_QUEUED_MESSAGE_EDIT
-            | methods::MOVE_QUEUED_MESSAGE
-            | methods::REMOVE_QUEUED_MESSAGE
-            | methods::SEND_QUEUED_MESSAGE_NOW
-            | methods::STEER_QUEUED_MESSAGE_NOW
-            // Repos/worktrees/folders are device-local filesystem state.
-            | methods::LIST_REPOS
-            | methods::ADD_REPO
-            | methods::CLONE_REPO
-            | methods::CREATE_REPO
-            | methods::LIST_BRANCHES
-            | methods::LIST_REFS
-            | methods::LIST_GIT_HISTORY
-            | methods::SEARCH_GIT_HISTORY
-            | methods::RESOLVE_GIT_AVATARS
-            | methods::FETCH_ALL
-            | methods::SWITCH_REF
-            | methods::LIST_FOLDERS
-            | methods::LIST_DRIVES
-            | methods::SEARCH_FILES
-            | methods::LIST_WORKSPACE_DIRECTORY
-            | methods::SEARCH_WORKSPACE_FILES
-            | methods::READ_WORKSPACE_IMAGE
-            | methods::READ_WORKSPACE_FILE
-            | methods::WRITE_WORKSPACE_FILE
-            | methods::WATCH_WORKSPACE_FILES
-            | methods::CREATE_WORKTREE
-            | methods::DELETE_WORKTREE
-            // Checkout diffs are produced on the device holding the checkout.
-            | methods::WATCH_CHECKOUT_DIFFS
-            | methods::WATCH_CHECKOUT_CHANGE_REQUEST
-            | methods::GET_CHECKOUT_DIFF
-            | methods::GET_CHECKOUT_FILE_DIFF_TEXT
-            // Terminals live on the chat's host device.
-            | methods::OPEN_TERMINAL
-            | methods::SUBSCRIBE_TERMINAL
-            | methods::WRITE_TERMINAL
-            | methods::RESIZE_TERMINAL
-            | methods::CLOSE_TERMINAL
-            // Agent accounts are per-device CLI logins (the device switcher
-            // retargets which device's logins are shown).
-            | methods::LIST_AGENT_ACCOUNTS
-            | methods::ACTIVATE_AGENT_ACCOUNT
-            | methods::FORGET_AGENT_ACCOUNT
-            | methods::START_AGENT_LOGIN
-            | methods::COMPLETE_AGENT_LOGIN
-            | methods::POLL_AGENT_LOGIN
-            | methods::CANCEL_AGENT_LOGIN
-            // Uploads/attachments target the chat's host device (the agent reads
-            // the committed file from that device's disk).
-            | methods::UPLOAD_CHUNK
-            | methods::UPLOAD_COMMIT
-            | methods::READ_ATTACHMENT_CHUNK
-            // Updates report/apply on the device whose binary they concern.
-            | methods::UPDATE_STATUS
-            | methods::APPLY_UPDATE
-    )
-}
-
-/// Forwardable methods whose reply is a stream (proxied item-by-item).
-fn is_stream_method(method: &str) -> bool {
-    matches!(
-        method,
-        methods::WATCH_DOC_MESSAGES
-            | methods::WATCH_QUEUE
-            | methods::SUBSCRIBE_TERMINAL
-            | methods::WATCH_CHECKOUT_DIFFS
-            | methods::WATCH_CHECKOUT_CHANGE_REQUEST
-            | methods::WATCH_WORKSPACE_FILES
-            | methods::UPDATE_STATUS
-    )
-}
-
 /// A watch receiver as a stream: current value first, then every change.
 fn watch_stream<T>(rx: watch::Receiver<T>) -> BoxStream<'static, serde_json::Value>
 where
@@ -1086,10 +961,8 @@ impl RpcService for AuthRpc {
 #[async_trait]
 impl RpcService for EngineRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
-        // Device-addressed routing: forward calls that target another device over its
-        // relay. The target compares the id to its own, so forwards cannot loop.
-        if forwardable(method)
-            && let Some(target) = params.get("targetDeviceId").and_then(|v| v.as_str())
+        // Fail closed if the client selected the wrong engine connection.
+        if let Some(target) = params.get("targetDeviceId").and_then(|v| v.as_str())
             && target != self.doc_host.device_id()
         {
             let target = target.to_string();
@@ -2177,55 +2050,6 @@ mod tests {
         .expect("ui param shape");
         assert_eq!(p.account_id, "acct-1");
         assert_eq!(p.harness, HarnessId::ClaudeCode);
-    }
-
-    #[test]
-    fn local_device_is_not_forwardable() {
-        assert!(!forwardable(methods::LOCAL_DEVICE));
-        assert!(!forwardable(methods::ENGINE_INFO));
-        assert!(!forwardable(methods::ENGINE_READY));
-        assert!(forwardable(methods::QUEUE_COMMAND));
-        assert!(forwardable(methods::SEARCH_FILES));
-        assert!(forwardable(methods::SEARCH_GIT_HISTORY));
-        assert!(forwardable(methods::FETCH_ALL));
-        assert!(forwardable(methods::RESOLVE_GIT_AVATARS));
-        assert!(forwardable(methods::WATCH_CHECKOUT_CHANGE_REQUEST));
-        assert!(is_stream_method(methods::WATCH_CHECKOUT_CHANGE_REQUEST));
-        assert!(forwardable(methods::LIST_WORKSPACE_DIRECTORY));
-        assert!(forwardable(methods::SEARCH_WORKSPACE_FILES));
-        assert!(forwardable(methods::READ_WORKSPACE_FILE));
-        assert!(forwardable(methods::READ_WORKSPACE_IMAGE));
-        assert!(forwardable(methods::WRITE_WORKSPACE_FILE));
-        assert!(forwardable(methods::WATCH_WORKSPACE_FILES));
-        assert!(!is_stream_method(methods::LIST_WORKSPACE_DIRECTORY));
-        assert!(!is_stream_method(methods::SEARCH_WORKSPACE_FILES));
-        assert!(!is_stream_method(methods::READ_WORKSPACE_FILE));
-        assert!(!is_stream_method(methods::WRITE_WORKSPACE_FILE));
-        assert!(is_stream_method(methods::WATCH_WORKSPACE_FILES));
-    }
-
-    /// Every forwardable unary method gets a bounded reply deadline —
-    /// interactive calls fail fast, network-bound git/update calls get the
-    /// long leash, and nothing awaits forever (the "Sending…" wedge).
-    #[test]
-    fn forward_deadlines_are_tiered_and_bounded() {
-        use std::time::Duration;
-        assert_eq!(
-            forward_deadline(methods::CREATE_WORKTREE),
-            Duration::from_secs(120)
-        );
-        assert_eq!(
-            forward_deadline(methods::CLONE_REPO),
-            Duration::from_secs(15 * 60)
-        );
-        assert_eq!(
-            forward_deadline(methods::LIST_BRANCHES),
-            Duration::from_secs(30)
-        );
-        assert_eq!(
-            forward_deadline(methods::QUEUE_COMMAND),
-            Duration::from_secs(30)
-        );
     }
 
     #[test]
