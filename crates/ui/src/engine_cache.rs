@@ -134,12 +134,18 @@ mod tests {
             .subscribe(methods::WATCH_CHATS, json!({}))
             .await
             .unwrap();
-        let chats: Vec<Chat> = serde_json::from_value(
-            tokio::time::timeout(Duration::from_secs(5), chat_stream.recv())
-                .await
-                .unwrap()
-                .unwrap(),
-        )
+        // The opening frame can predate the workspace's first publish; wait
+        // for the frame that actually carries the created chat.
+        let chats: Vec<Chat> = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = chat_stream.recv().await.unwrap();
+                let rows: Vec<Chat> = serde_json::from_value(frame).unwrap();
+                if !rows.is_empty() {
+                    break rows;
+                }
+            }
+        })
+        .await
         .unwrap();
         let mut transcript = client
             .subscribe(methods::WATCH_DOC_MESSAGES, json!({"chatId":"same-chat"}))
