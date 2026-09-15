@@ -2156,7 +2156,38 @@ fn spawn_transcript_watch(
     handle: EngineTarget,
     chat_id: String,
 ) -> Task<()> {
+    let cache = cx
+        .entity()
+        .read(cx)
+        .data_dir
+        .as_deref()
+        .map(crate::engine_cache::EngineCache::new);
+    let engine_key = handle.key().0.clone();
+    let raw_chat = ScopedId::parse(&chat_id).ok().map(|id| id.raw_id);
     cx.spawn(async move |this, cx| {
+        if let (Some(cache), Some(raw_chat)) = (cache.clone(), raw_chat.clone()) {
+            let key = engine_key.clone();
+            let entries = cx
+                .background_executor()
+                .spawn(async move { cache.load_transcript(&key, &raw_chat) })
+                .await;
+            if let Some(entries) = entries {
+                if this
+                    .update(cx, |state, cx| {
+                        if state.selected_chat.as_deref() == Some(chat_id.as_str())
+                            && !state.transcript_replayed
+                        {
+                            state.apply_transcript(entries);
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }
+        let mut last_cache_write = std::time::Instant::now() - std::time::Duration::from_secs(1);
         // Outer loop: a delta desync (missed frame) resubscribes immediately
         // and the fresh stream's opening reset heals the copy; a subscribe
         // failure, malformed frame, or stream end retries on a delay. Every
@@ -2212,7 +2243,17 @@ fn spawn_transcript_watch(
                             tracing::warn!(%chat_id, error = %err, "resubscribing transcript");
                             desync = true;
                         }
+                        let complete = state.transcript.last().is_none_or(|entry| {
+                            entry.status != Some(roboco_doc::MessageStatus::Streaming)
+                        });
+                        if !desync
+                            && (complete
+                                || last_cache_write.elapsed() >= std::time::Duration::from_secs(1))
+                        {
+                            return Some(state.transcript.clone());
+                        }
                     }
+                    None
                 });
                 if alive.is_err() {
                     return;
@@ -2220,12 +2261,42 @@ fn spawn_transcript_watch(
                 if desync {
                     continue 'resubscribe;
                 }
+                if let (Ok(Some(entries)), Some(cache), Some(raw_chat)) =
+                    (alive, cache.clone(), raw_chat.clone())
+                {
+                    let key = engine_key.clone();
+                    if let Err(error) = cx
+                        .background_executor()
+                        .spawn(async move { cache.save_transcript(&key, &raw_chat, &entries) })
+                        .await
+                    {
+                        tracing::debug!(%error, "transcript cache write failed");
+                    }
+                    last_cache_write = std::time::Instant::now();
+                }
             }
             // Stream ended: engine restart, RPC drop, or chat purge. Retry;
             // the purge case is cleaned up by apply_chats dropping this task.
             tracing::debug!(%chat_id, "transcript stream ended; resubscribing");
-            if this.update(cx, |_, _| {}).is_err() {
+            let final_entries = this.update(cx, |state, _| {
+                (state.selected_chat.as_deref() == Some(chat_id.as_str())
+                    && state.transcript_replayed)
+                    .then(|| state.transcript.clone())
+            });
+            if final_entries.is_err() {
                 return;
+            }
+            if let (Ok(Some(entries)), Some(cache), Some(raw_chat)) =
+                (final_entries, cache.clone(), raw_chat.clone())
+            {
+                let key = engine_key.clone();
+                if let Err(error) = cx
+                    .background_executor()
+                    .spawn(async move { cache.save_transcript(&key, &raw_chat, &entries) })
+                    .await
+                {
+                    tracing::debug!(%error, "transcript cache write failed");
+                }
             }
             cx.background_executor().timer(RETRY_DELAY).await;
         }
