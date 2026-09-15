@@ -467,21 +467,16 @@ impl Render for DevicesPage {
                             .child(widgets::meta_line(&theme, meta)),
                     )
                     .when(is_local, |el| {
-                        el.child(
-                            div()
-                                .flex_none()
-                                .text_size(px(10.5))
-                                .text_color(theme.text_muted)
-                                .child(
-                                    if workspace_scope == Some(WorkspaceScope::Local)
-                                        && self.state.read(cx).registry().is_none()
-                                    {
-                                        "Local only"
-                                    } else {
-                                        "This device"
-                                    },
-                                ),
-                        )
+                        el.child(widgets::badge(
+                            &theme,
+                            if workspace_scope == Some(WorkspaceScope::Local)
+                                && self.state.read(cx).registry().is_none()
+                            {
+                                "Local only"
+                            } else {
+                                "This device"
+                            },
+                        ))
                     })
                     .when_some(forget_key, |el, key| {
                         el.child(
@@ -523,7 +518,7 @@ impl Render for DevicesPage {
         let card = if rows.is_empty() {
             card.child(
                 div()
-                    .px(px(20.0))
+                    .px(px(16.0))
                     .py(px(40.0))
                     .text_center()
                     .text_size(crate::typography::ui_rems(14.0))
@@ -575,27 +570,51 @@ impl Render for DevicesPage {
                         },
                     )
                     .child(
-                        div()
-                            .mb(px(16.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(8.0))
-                            .child(widgets::row_title(&theme, "Add engine"))
-                            .child(popover::dialog_field(
-                                self.pairing.clone().into_any_element(),
-                            ))
-                            .child(
-                                popover::btn_primary(
-                                    &theme,
-                                    if self.pairing_busy {
-                                        "Connecting?"
-                                    } else {
-                                        "Connect"
-                                    },
+                        widgets::section_card(&theme).child(
+                            div()
+                                .px(px(16.0))
+                                .py(px(10.0))
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(12.0))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .child(popover::dialog_field(
+                                                    self.pairing.clone().into_any_element(),
+                                                )),
+                                        )
+                                        .child(
+                                            popover::btn_primary(
+                                                &theme,
+                                                if self.pairing_busy {
+                                                    "Connecting…"
+                                                } else {
+                                                    "Connect"
+                                                },
+                                            )
+                                            .id("pair-engine")
+                                            .on_click(cx.listener(
+                                                |this, _, _, cx| this.pair(cx),
+                                            )),
+                                        ),
                                 )
-                                .id("pair-engine")
-                                .on_click(cx.listener(|this, _, _, cx| this.pair(cx))),
-                            ),
+                                .child(
+                                    div()
+                                        .mt(px(6.0))
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(theme.text_muted.opacity(0.65))
+                                        .child(SharedString::from(
+                                            "Create a pairing link in the engine's Remote access settings, then paste it here.",
+                                        )),
+                                ),
+                        ),
                     )
                     .child(card),
             )

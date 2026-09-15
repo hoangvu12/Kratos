@@ -156,18 +156,80 @@ pub fn section_card(theme: &Theme) -> gpui::Div {
         .flex_col()
 }
 
-/// One card row: `border-t border-border px-5 py-3.5 first:border-t-0` with the
-/// quiet hover wash.
+/// One card row: `border-t border-border px-4 py-2.5 first:border-t-0` with the
+/// quiet hover wash (t3 item-row rhythm — corners and dividers belong to the
+/// group card, never to the row).
 pub fn card_row(theme: &Theme, first: bool) -> gpui::Div {
     div()
-        .px(px(20.0))
-        .py(px(14.0))
+        .px(px(16.0))
+        .py(px(10.0))
         .when(!first, |el| el.border_t_1().border_color(theme.border))
         .hover(|s| s.bg(ink(0.015)))
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(14.0))
+        .gap(px(12.0))
+}
+
+/// Section header over a group card: `text-xs font-medium text-muted` label
+/// with the section's trailing action ("Paired sessions ——— Create link").
+pub fn section_header(
+    theme: &Theme,
+    label: impl Into<SharedString>,
+    trailing: Option<AnyElement>,
+) -> gpui::Div {
+    div()
+        .mt(px(28.0))
+        .mb(px(10.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(crate::typography::ui_rems(12.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(theme.text_muted.opacity(0.85))
+                .child(label.into()),
+        )
+        .when_some(trailing, |el, action| el.child(action))
+}
+
+/// Inline 8px status dot (`size-2 rounded-full`) — colour carries state, so
+/// the caller picks the token (success / warning / danger / faint ink).
+pub fn status_dot(color: gpui::Hsla) -> gpui::Div {
+    div().flex_none().size(px(8.0)).rounded_full().bg(color)
+}
+
+/// Accent-tinted micro-pill (`border-primary/30 bg-primary/10 text-primary`,
+/// 10px) — the t3 "Default"/"Setup required" pill shape.
+pub fn badge_tinted(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div {
+    let accent = theme.accent;
+    div()
+        .flex_none()
+        .px(px(8.0))
+        .py(px(2.0))
+        .rounded_full()
+        .border_1()
+        .border_color(accent.opacity(0.3))
+        .bg(accent.opacity(0.1))
+        .text_size(crate::typography::ui_rems(10.5))
+        .text_color(accent)
+        .child(label.into())
+}
+
+/// Mono, truncating URL fragment (`font-mono text-[11px]
+/// text-muted-foreground truncate`) so links read as data, not prose.
+pub fn url_fragment(theme: &Theme, url: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .min_w_0()
+        .truncate()
+        .font_family(theme.font_mono.clone())
+        .text_size(crate::typography::ui_rems(11.0))
+        .text_color(theme.text_muted.opacity(0.8))
+        .child(url.into())
 }
 
 /// The identity tile on a row: `size-9 rounded-[10px] border bg-white/[0.03]`
