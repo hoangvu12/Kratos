@@ -21,7 +21,29 @@ engine profile. Provider AgentAccounts and their OAuth flows remain available.
 The existing deferred engine listener and instance lock still coordinate multiple
 local windows; engine readiness now determines the shell gate.
 
-Validation in progress: proto 23 tests and RPC 6 tests passed. UI and desktop binary
-`cargo check --tests` passed on Windows. Full UI library regressions are running;
-record final result before resolving the ticket. Repository-wide format check has
-pre-existing differences; touched files have been formatted separately.
+## Validation
+
+- Proto: 23 tests passed. RPC: 6 tests passed.
+- UI and desktop binary `cargo check --tests` passed on Windows.
+- Rebuilt the UI test executable after engine constructor cleanup and the
+  Windows identity-lock fix. All 924 unique nonignored UI tests passed across
+  40 module-isolated runs; 5 existing tests were ignored. Verified the union of
+  successful/ignored test names covers every test from the executable's `--list`.
+- Fixed stale test expectations discovered by this run: the daemon fixture now
+  creates an explicit local profile; the Roboco name contains 6 bytes; Windows
+  frost tests reflect the renderer's existing frost support. Provider account
+  coverage remains included.
+- The monolithic Windows UI run still aborts with `0xc0000409`
+  (`STATUS_STACK_BUFFER_OVERRUN`) at varying allocation-heavy tests after several
+  hundred successes. Isolated history/icons tests pass, and increasing thread
+  stack size or using two test threads does not resolve the abort. Its cause is
+  unconfirmed; no unrelated production workaround was introduced. This prevents
+  claiming that the unmodified monolithic regression command is green.
+- No Linux release/headless UI run was available on this Windows host.
+  Workspace-wide checks remain the integration owner's responsibility.
+- Repository-wide format check reports pre-existing differences; touched core
+  UI/config files were formatted separately. `git diff --check` passed.
+
+Local diagnostic artifacts: `C:/Users/ADMIN/Temp/auth04-ui-final.log`,
+`auth04-split/results.json`, and per-module logs beside that JSON. The diagnostic
+scripts live outside the repository and are not shipped.
