@@ -269,6 +269,7 @@ mod tests {
         use gpui::AppContext as _;
         cx.new(|cx| {
             let context = FilesRequestContext {
+                engine: crate::engine_registry::EngineKey::local(),
                 target: roboco_proto::WorkspaceTarget {
                     chat_id: Some("remote-chat".into()),
                     space_id: None,
@@ -389,6 +390,7 @@ mod tests {
             let transport = Arc::new(ImageTransport::default());
             let view = cx.new(|cx| {
                 let context = FilesRequestContext {
+                    engine: crate::engine_registry::EngineKey::local(),
                     target: roboco_proto::WorkspaceTarget {
                         chat_id: Some("chat".into()),
                         space_id: None,
@@ -435,6 +437,7 @@ mod tests {
                     |window, cx| {
                         cx.new(|cx| {
                             let context = FilesRequestContext {
+                                engine: crate::engine_registry::EngineKey::local(),
                                 target: roboco_proto::WorkspaceTarget {
                                     chat_id: Some("chat".into()),
                                     space_id: None,

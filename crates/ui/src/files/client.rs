@@ -1,21 +1,22 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::{Serialize, de::DeserializeOwned};
-use serde_json::Value;
-use tokio::sync::mpsc;
 use roboco_proto::{
     ListWorkspaceDirectoryRequest, ReadWorkspaceFileRequest, SearchWorkspaceFilesRequest,
     WatchWorkspaceFilesRequest, WorkspaceDirectoryPage, WorkspaceFileSearchMatch,
     WorkspaceFileText, WorkspaceTarget, WriteWorkspaceFileOutcome, WriteWorkspaceFileRequest,
 };
 use roboco_rpc::{RpcError, methods};
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::Value;
+use tokio::sync::mpsc;
 
-use crate::state::AppState;
 use crate::engine_registry::EngineTarget;
+use crate::state::AppState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FilesRequestContext {
+    pub engine: crate::engine_registry::EngineKey,
     pub target: WorkspaceTarget,
     pub target_device_id: Option<String>,
     pub cwd: String,
@@ -28,6 +29,9 @@ impl FilesRequestContext {
         let cwd = chat.cwd.clone()?;
         let target_device_id = None;
         Some(Self {
+            engine: crate::engine_registry::ScopedId::parse(chat_id)
+                .ok()?
+                .engine,
             target: WorkspaceTarget {
                 chat_id: Some(crate::request_routing::raw_id(&chat.id).ok()?),
                 space_id: None,
@@ -35,7 +39,12 @@ impl FilesRequestContext {
             },
             target_device_id,
             cwd,
-            checkout_id: chat.checkout_id.as_deref().map(crate::request_routing::raw_id).transpose().ok()?,
+            checkout_id: chat
+                .checkout_id
+                .as_deref()
+                .map(crate::request_routing::raw_id)
+                .transpose()
+                .ok()?,
         })
     }
 }
@@ -365,6 +374,7 @@ mod tests {
             let client = WorkspaceFilesClient::with_transport(
                 transport.clone(),
                 FilesRequestContext {
+                    engine: crate::engine_registry::EngineKey::local(),
                     target: target(),
                     target_device_id: Some("remote".into()),
                     cwd: "/workspace".into(),
@@ -415,6 +425,7 @@ mod tests {
             let client = WorkspaceFilesClient::with_transport(
                 transport.clone(),
                 FilesRequestContext {
+                    engine: crate::engine_registry::EngineKey::local(),
                     target: target(),
                     target_device_id: None,
                     cwd: "/workspace".into(),
@@ -460,6 +471,7 @@ mod tests {
             let client = WorkspaceFilesClient::with_transport(
                 transport,
                 FilesRequestContext {
+                    engine: crate::engine_registry::EngineKey::local(),
                     target: target(),
                     target_device_id: None,
                     cwd: "/workspace".into(),
@@ -615,6 +627,7 @@ mod tests {
             ..Default::default()
         });
         let context = FilesRequestContext {
+            engine: crate::engine_registry::EngineKey::local(),
             target: target(),
             target_device_id: Some("remote-device".into()),
             cwd: "/workspace".into(),
@@ -691,6 +704,7 @@ mod tests {
             ..Default::default()
         });
         let context = FilesRequestContext {
+            engine: crate::engine_registry::EngineKey::local(),
             target: target(),
             target_device_id: None,
             cwd: "/workspace".into(),
@@ -752,6 +766,7 @@ mod tests {
         let client = WorkspaceFilesClient {
             transport: transport.clone(),
             context: FilesRequestContext {
+                engine: crate::engine_registry::EngineKey::local(),
                 target: target(),
                 target_device_id: Some("remote".into()),
                 cwd: "/remote/checkout".into(),

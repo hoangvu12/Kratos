@@ -115,3 +115,33 @@ pub fn scope_checkout_frame(
     }
     frame
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine_registry::EngineKey;
+    use serde_json::json;
+
+    #[test]
+    fn wire_boundary_decodes_only_request_identity() {
+        let owner = EngineKey("engine-b".into());
+        let id = ScopedId::encode(&owner, "same-chat");
+        let params = json!({"chatId": id, "targetDeviceId": ScopedId::encode(&owner, "device"),
+            "text": id, "options": {"chatId": id}, "path": id,
+            "target": {"chatId": id}});
+        let wire = wire_params(&owner, "ReadWorkspaceFile", params.clone()).unwrap();
+        assert_eq!(wire["chatId"], "same-chat");
+        assert_eq!(wire["target"]["chatId"], "same-chat");
+        assert!(wire.get("targetDeviceId").is_none());
+        for key in ["text", "options", "path"] {
+            assert_eq!(wire[key], params[key]);
+        }
+    }
+
+    #[test]
+    fn wire_boundary_rejects_another_engine_identity() {
+        let owner = EngineKey("engine-b".into());
+        let foreign = ScopedId::encode(&EngineKey("engine-a".into()), "same-chat");
+        assert!(wire_params(&owner, "QueueCommand", json!({"chatId": foreign})).is_err());
+    }
+}

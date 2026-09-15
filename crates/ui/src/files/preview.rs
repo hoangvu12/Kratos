@@ -4354,6 +4354,7 @@ mod markdown_buffer_tests {
         window
             .update(cx, |surface, window, cx| {
                 surface.request_context = Some(FilesRequestContext {
+                    engine: crate::engine_registry::EngineKey::local(),
                     target: roboco_proto::WorkspaceTarget {
                         chat_id: Some("chat".into()),
                         space_id: None,
