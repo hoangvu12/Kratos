@@ -190,6 +190,9 @@ fn release_base(edge_url: &str) -> anyhow::Result<String> {
     if let Some(url) = windows::release_url()? {
         return Ok(url.trim_end_matches('/').to_owned());
     }
+    if edge_url.is_empty() {
+        return Ok("https://github.com/hoangvu12/roboco/releases/latest/download".into());
+    }
     Ok(format!("{}/releases", edge_url.trim_end_matches('/')))
 }
 
@@ -916,10 +919,13 @@ mod tests {
                 .contains("not supported on windows")
         );
         assert!(
-            apply_mac_app(&data_dir.join("Roboco.app"), &data_dir.join("Installed.app"))
-                .unwrap_err()
-                .to_string()
-                .contains("not supported on windows")
+            apply_mac_app(
+                &data_dir.join("Roboco.app"),
+                &data_dir.join("Installed.app")
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("not supported on windows")
         );
         assert!(
             restart_service()
