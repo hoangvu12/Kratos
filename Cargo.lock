@@ -11712,6 +11712,7 @@ version = "0.2.65"
 dependencies = [
  "anyhow",
  "clap",
+ "embed-resource",
  "libc",
  "mimalloc",
  "serde_json",
@@ -11719,6 +11720,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
  "zeron-engine",
  "zeron-rpc",
  "zeron-ui",
@@ -11767,6 +11769,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "windows-sys 0.61.2",
  "zeron-doc",
  "zeron-harness",
  "zeron-preview",
@@ -11794,6 +11797,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "windows-sys 0.61.2",
  "zeron-proto",
 ]
 
@@ -11979,6 +11983,7 @@ dependencies = [
  "url",
  "usvg",
  "uuid",
+ "windows-sys 0.61.2",
  "wry",
  "x11rb 0.14.0",
  "zeron-doc",
@@ -12004,6 +12009,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
