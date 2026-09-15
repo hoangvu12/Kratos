@@ -61,7 +61,7 @@ use tokio::sync::watch;
 
 use roboco_doc::{MessagePart, SessionCommandPayload};
 use roboco_proto::{ChatConfig, EngineInfo, HarnessId, ToolCall, WorkspaceScope};
-use roboco_rpc::{LinkCache, RpcError, RpcReply, RpcService, methods, parse_params};
+use roboco_rpc::{RpcError, RpcReply, RpcService, methods, parse_params};
 
 use crate::agent_accounts::AgentAccounts;
 use crate::auth::Auth;
@@ -476,7 +476,6 @@ pub struct EngineRpc {
     uploads: Uploads,
     agent_accounts: AgentAccounts,
     auth: Option<Auth>,
-    links: Option<std::sync::Arc<LinkCache>>,
     updater: Option<roboco_update::Updater>,
     local_import: Option<crate::local_import::LocalImporter>,
     engine_info: EngineInfo,
@@ -517,7 +516,6 @@ impl EngineRpc {
             uploads,
             agent_accounts,
             auth: None,
-            links: None,
             updater: None,
             local_import: None,
             engine_info,
@@ -532,12 +530,6 @@ impl EngineRpc {
     /// Attach the auth service (AuthStatus + AuthRpc mutations).
     pub fn with_auth(mut self, auth: Auth) -> Self {
         self.auth = Some(auth);
-        self
-    }
-
-    /// Attach the peer link cache — enables `targetDeviceId` relay forwarding.
-    pub fn with_links(mut self, links: std::sync::Arc<LinkCache>) -> Self {
-        self.links = Some(links);
         self
     }
 
@@ -684,80 +676,6 @@ impl EngineRpc {
             }
         }
         paths
-    }
-
-    /// Forward a device-addressed call over the target device's relay. On transport
-    /// failure the cached link is invalidated so the next call re-dials.
-    async fn forward(
-        &self,
-        target: &str,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<RpcReply, RpcError> {
-        let Some(links) = &self.links else {
-            return Err(RpcError::Failed(format!(
-                "cannot reach device {target}: remote routing unavailable (offline)"
-            )));
-        };
-        let client = links.client(target).await?;
-        if is_stream_method(method) {
-            // Streams are unbounded by design (a quiet WATCH_* is healthy);
-            // only unary calls below get the reply deadline.
-            if method == methods::WATCH_CHECKOUT_CHANGE_REQUEST {
-                let rx = match client.subscribe_checked(method, params).await {
-                    Ok(rx) => rx,
-                    Err(err) => {
-                        if should_invalidate_link(&err) {
-                            links.invalidate(target);
-                        }
-                        return Err(err);
-                    }
-                };
-                let stream = futures::stream::unfold((rx, client), |(mut rx, client)| async move {
-                    rx.recv().await.map(|item| (item, (rx, client)))
-                });
-                return Ok(RpcReply::Stream(stream.boxed()));
-            }
-            let rx = match client.subscribe(method, params).await {
-                Ok(rx) => rx,
-                Err(err) => {
-                    if should_invalidate_link(&err) {
-                        links.invalidate(target);
-                    }
-                    return Err(err);
-                }
-            };
-            // Pipe remote items; the held client keeps the link's RpcClient alive for
-            // the stream's lifetime. A remote error just ends the stream (the relay
-            // link-down path fails pending calls; stream receivers close).
-            let stream = futures::stream::unfold((rx, client), |(mut rx, client)| async move {
-                rx.recv().await.map(|item| (item, (rx, client)))
-            });
-            return Ok(RpcReply::Stream(stream.boxed()));
-        }
-        let deadline = forward_deadline(method);
-        match tokio::time::timeout(deadline, client.call(method, params)).await {
-            Ok(Ok(value)) => Ok(RpcReply::Value(value)),
-            Ok(Err(err)) => {
-                if should_invalidate_link(&err) {
-                    links.invalidate(target);
-                }
-                Err(err)
-            }
-            Err(_) => {
-                // No reply inside the deadline. The link may be a zombie — the
-                // relay's auto-pong keeps a dead host socket looking alive
-                // (ws3 auto-pong incident) — so drop it; the next call re-dials.
-                // NOTE: the remote may still complete the forwarded work; the
-                // caller sees a retryable failure instead of hanging forever
-                // (the "Sending…" wedge, 2026-08-18).
-                links.invalidate(target);
-                Err(RpcError::Transport(format!(
-                    "no reply from device {target} for {method} within {}s",
-                    deadline.as_secs()
-                )))
-            }
-        }
     }
 
     fn mutate(&self, params: MutateParams) -> Result<(), RpcError> {
@@ -1175,7 +1093,9 @@ impl RpcService for EngineRpc {
             && target != self.doc_host.device_id()
         {
             let target = target.to_string();
-            return self.forward(&target, method, params).await;
+            return Err(RpcError::Failed(format!(
+                "engine {target} is not connected; requests must use its own connection"
+            )));
         }
         if AuthRpc::handles(method) {
             return AuthRpc::new(self.auth()?.clone())
@@ -1403,62 +1323,7 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "sent": sent }))
             }
-            methods::PROBE_SYNC => {
-                self.workspace.probe();
-                self.doc_host.probe_open_chats();
-                self.doc_host.probe_edge_reachability();
-                RpcReply::value(&serde_json::json!({}))
-            }
-            methods::SYNC_STATUS => {
-                fn room_json(s: &roboco_sync::RoomStatsSnapshot) -> serde_json::Value {
-                    serde_json::json!({
-                        "connected": s.connected,
-                        "synced": s.synced,
-                        "lastPushedMs": s.last_pushed_ms,
-                        "lastAckMs": s.last_ack_ms,
-                        "rejoins": s.rejoins,
-                        "probes": s.probes,
-                        "fullResyncs": s.full_resyncs,
-                        "disconnects": s.disconnects,
-                        "rejected": s.rejected,
-                    })
-                }
-                fn chat2_json(s: &roboco_sync::ChatStatsSnapshot) -> serde_json::Value {
-                    serde_json::json!({
-                        "connected": s.connected,
-                        "cursor": s.cursor,
-                        "headSeq": s.head_seq,
-                        "seqFloor": s.seq_floor,
-                        "checkpointSeq": s.checkpoint_seq,
-                        "checkpointSize": s.checkpoint_size,
-                        "rowCount": s.row_count,
-                        "rowBytes": s.row_bytes,
-                        "pendingPushes": s.pending_pushes,
-                        "rejoins": s.rejoins,
-                        "disconnects": s.disconnects,
-                        "rejected": s.rejected,
-                        "serverResets": s.server_resets,
-                    })
-                }
-                let workspace = self.workspace.sync_status();
-                let chats: Vec<serde_json::Value> = self
-                    .doc_host
-                    .sync_statuses()
-                    .iter()
-                    .map(|(chat_id, room)| {
-                        serde_json::json!({
-                            "chatId": chat_id,
-                            "room": room.as_ref().map(chat2_json),
-                        })
-                    })
-                    .collect();
-                RpcReply::value(&serde_json::json!({
-                    "deviceId": self.doc_host.device_id(),
-                    "nowMs": crate::now_ms(),
-                    "workspace": workspace.as_ref().map(room_json),
-                    "chats": chats,
-                }))
-            }
+
             methods::WATCH_CONNECTIVITY => Ok(RpcReply::Stream(watch_stream(
                 self.doc_host.watch_connectivity(),
             ))),
