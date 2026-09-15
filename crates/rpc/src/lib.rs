@@ -102,15 +102,7 @@ pub mod methods {
     /// Headed IPC owners do not implement this method: closing another app's
     /// engine behind its windows would leave that process unusable.
     pub const STOP_ENGINE: &str = "StopEngine";
-    pub const AUTH_STATUS: &str = "AuthStatus";
     // AuthRpc mutations (feature-inventory §2 AuthRpc; IPC-only).
-    pub const SIGN_IN: &str = "SignIn";
-    pub const SIGN_IN_HEADLESS: &str = "SignInHeadless";
-    pub const COMPLETE_SIGN_IN: &str = "CompleteSignIn";
-    pub const SIGN_OUT: &str = "SignOut";
-    pub const LIST_ORGS: &str = "ListOrgs";
-    pub const CREATE_ORG: &str = "CreateOrg";
-    pub const SELECT_ORG: &str = "SelectOrg";
     /// One-time local→synced profile import: what's importable (unary).
     pub const LOCAL_IMPORT_STATUS: &str = "LocalImportStatus";
     /// One-time local→synced profile import: run it (stream of progress items).

@@ -23,11 +23,6 @@ const SYSTEMD_UNIT: &str = "roboco.service";
 const CAPTURED_ENV: &[&str] = &[
     "PATH",
     "ROBOCO_DATA_DIR",
-    "ROBOCO_EDGE_URL",
-    "ROBOCO_EDGE_TOKEN",
-    "ROBOCO_ORG_ID",
-    "ROBOCO_WORKOS_CLIENT_ID",
-    "ROBOCO_WORKOS_API_BASE",
     "ROBOCO_IPC_PORT",
     "ROBOCO_CALLBACK_PORT",
     "ROBOCO_HARNESS",
@@ -436,7 +431,8 @@ mod tests {
         assert!(plist.contains("<string>headless</string>"));
         assert!(plist.contains("<key>SuccessfulExit</key><false/>"));
         assert!(
-            plist.contains("<key>StandardOutPath</key><string>/Users/x/.roboco/daemon.log</string>")
+            plist
+                .contains("<key>StandardOutPath</key><string>/Users/x/.roboco/daemon.log</string>")
         );
     }
 }

@@ -63,8 +63,8 @@ use std::path::PathBuf;
 use futures::{FutureExt as _, StreamExt as _};
 use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
-pub use state::EngineBootConfig;
 pub use roboco_proto::HarnessId;
+pub use state::EngineBootConfig;
 
 /// Whether a control whose primary action is click activation may also start
 /// a GPUI drag from the same hitbox. GPUI promotes pointer travel above 2 px
@@ -85,14 +85,14 @@ pub struct UiConfig {
     /// Localhost IPC port: connect if an engine daemon is listening, embed if not.
     pub ipc_port: u16,
     /// Edge base URL for the embedded engine.
-    pub edge_url: String,
+
     /// Edge bearer; `None` runs offline.
-    pub edge_token: Option<String>,
+
     /// Workspace org override for explicit dev-mode runs.
-    pub org_id: Option<String>,
+
     /// WorkOS client id; `Some` makes the embedded headed engine require a
     /// production session before opening identity-scoped stores.
-    pub workos_client_id: Option<String>,
+
     /// Harness for doc-command runs until per-chat config lands (M4).
     pub default_harness: HarnessId,
     /// Conversation URL passed by the OS on a cold launch.
@@ -104,10 +104,7 @@ impl UiConfig {
         EngineBootConfig {
             data_dir: self.data_dir.clone(),
             ipc_port: self.ipc_port,
-            edge_url: self.edge_url.clone(),
-            edge_token: self.edge_token.clone(),
-            org_id: self.org_id.clone(),
-            workos_client_id: self.workos_client_id.clone(),
+
             default_harness: self.default_harness,
         }
     }
