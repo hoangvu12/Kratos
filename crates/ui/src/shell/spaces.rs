@@ -184,6 +184,11 @@ pub(super) enum SpacesMenuRow {
 /// the right, kbd-hint footer. One surface — picking a device or a drive in
 /// the rail rebrowses in place, no step wizard.
 pub(super) struct AddSpaceFlow {
+    identity: uuid::Uuid,
+    revision: u64,
+    manual: Option<roboco_engine::space_paths::SpacePath>,
+    manual_task: Option<Task<()>>,
+    hidden_query: bool,
     /// The device currently browsed (the highlighted rail row).
     device: Option<Device>,
     /// Filter input; Enter descends into the highlighted folder. Carries the
@@ -227,6 +232,243 @@ pub(super) struct AddSpaceFlow {
 enum LocationRow {
     Home,
     Drive(usize),
+}
+
+fn manual_path_query(text: &str) -> bool {
+    let text = text.trim();
+    text.starts_with('/')
+        || text.starts_with('~')
+        || text.starts_with('\\')
+        || text.as_bytes().get(1) == Some(&b':')
+}
+
+#[cfg(test)]
+mod manual_path_interactions {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+
+    #[gpui::test]
+    fn manual_remote_path_enter_and_create_use_selected_engine(cx: &mut TestAppContext) {
+        let local_dir = tempfile::tempdir().unwrap();
+        let remote_dir = tempfile::tempdir().unwrap();
+        let projects = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (remote, listener, url) = runtime.block_on(async {
+            let core = roboco_engine::EngineCore::assemble_with_profile(
+                roboco_engine::EngineProfile::local(remote_dir.path()).unwrap(),
+                std::sync::Arc::new(roboco_engine::HarnessRegistry::new()),
+                roboco_proto::HarnessId::Mock,
+            )
+            .unwrap();
+            let listener = roboco_engine::serve_engine_remote(
+                "127.0.0.1:0".parse().unwrap(),
+                core.rpc_service(),
+                remote_dir.path(),
+            )
+            .await
+            .unwrap();
+            let code = roboco_engine::pairing::PairingStore::open(remote_dir.path())
+                .unwrap()
+                .create_code("UI test", 300)
+                .unwrap();
+            let url = roboco_engine::pairing::pairing_url(
+                &format!("http://{}", listener.address),
+                &code.credential,
+            )
+            .unwrap();
+            (core, listener, url)
+        });
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            gpui_tokio::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
+            crate::settings::init(Default::default(), local_dir.path(), cx);
+        });
+        let state = cx.new(|_| AppState::new());
+        let boot = EngineBootConfig {
+            data_dir: local_dir.path().into(),
+            ipc_port: 0,
+            default_harness: roboco_proto::HarnessId::Mock,
+        };
+        cx.update(|cx| AppState::bootstrap(state.clone(), boot.clone(), cx));
+        let window = cx.add_window(|_, cx| Shell::new(state.clone(), boot, cx));
+        macro_rules! wait_for {
+            ($condition:expr) => {{
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                loop {
+                    cx.run_until_parked();
+                    if $condition {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "UI condition timed out"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }};
+        }
+        wait_for!(cx.update(|cx| state.read(cx).registry().is_some()));
+        let registry = cx.update(|cx| state.read(cx).registry().unwrap().clone());
+        let key = runtime
+            .block_on(registry.pair(&url, "Palette test"))
+            .unwrap();
+        let device_id = crate::engine_registry::ScopedId::encode(&key, &remote.device_id);
+        wait_for!(cx.update(|cx| {
+            state
+                .read(cx)
+                .devices
+                .iter()
+                .any(|device| device.id == device_id)
+        }));
+        let device = cx.update(|cx| {
+            state
+                .read(cx)
+                .devices
+                .iter()
+                .find(|device| device.id == device_id)
+                .unwrap()
+                .clone()
+        });
+        for missing in [false, true] {
+            let path = projects.path().join(if missing {
+                "create-from-palette"
+            } else {
+                "existing"
+            });
+            if !missing {
+                std::fs::create_dir(&path).unwrap();
+            }
+            window
+                .update(cx, |shell, _, cx| {
+                    shell.open_add_space(cx);
+                    shell.add_space_pick_device(device.clone(), cx);
+                    let input = shell.add_space.as_ref().unwrap().search.clone();
+                    input.update(cx, |input, cx| input.set_text(path.to_string_lossy(), cx));
+                })
+                .unwrap();
+            wait_for!(
+                window
+                    .update(cx, |shell, _, _| shell
+                        .add_space
+                        .as_ref()
+                        .and_then(|flow| flow.manual.as_ref())
+                        .is_some())
+                    .unwrap()
+            );
+            window
+                .update(cx, |shell, _, cx| shell.add_space_open_active(cx))
+                .unwrap();
+            if missing {
+                wait_for!(
+                    window
+                        .update(cx, |shell, _, _| shell
+                            .add_space
+                            .as_ref()
+                            .is_some_and(|flow| !flow.submit_busy
+                                && flow.manual.as_ref().is_some_and(|path| !path.exists)))
+                        .unwrap()
+                );
+                assert!(
+                    !path.exists(),
+                    "Enter must not silently create a missing folder"
+                );
+                window
+                    .update(cx, |shell, _, cx| shell.submit_add_space(cx))
+                    .unwrap();
+            }
+            wait_for!(
+                window
+                    .update(cx, |shell, _, _| shell.add_space.is_none())
+                    .unwrap()
+            );
+            assert!(path.is_dir());
+            assert!(
+                remote
+                    .workspace
+                    .read_spaces()
+                    .unwrap()
+                    .iter()
+                    .any(|space| space.path == path.to_string_lossy())
+            );
+        }
+        std::fs::create_dir(projects.path().join(".hidden-project")).unwrap();
+        window
+            .update(cx, |shell, _, cx| {
+                shell.open_add_space(cx);
+                shell.add_space_pick_device(device.clone(), cx);
+                shell.add_space_goto_location(
+                    Some(projects.path().to_string_lossy().into_owned()),
+                    cx,
+                );
+            })
+            .unwrap();
+        wait_for!(
+            window
+                .update(cx, |shell, _, _| shell
+                    .add_space
+                    .as_ref()
+                    .is_some_and(|flow| flow.browser.ready().is_some()))
+                .unwrap()
+        );
+        assert!(
+            window
+                .update(cx, |shell, _, cx| shell
+                    .add_space_filtered(cx)
+                    .iter()
+                    .all(|row| !row.name.starts_with('.')))
+                .unwrap()
+        );
+        window
+            .update(cx, |shell, _, cx| {
+                let input = shell.add_space.as_ref().unwrap().search.clone();
+                input.update(cx, |input, cx| input.set_text(".", cx));
+            })
+            .unwrap();
+        wait_for!(
+            window
+                .update(cx, |shell, _, cx| shell
+                    .add_space_filtered(cx)
+                    .iter()
+                    .any(|row| row.name == ".hidden-project"))
+                .unwrap()
+        );
+        window
+            .update(cx, |shell, _, cx| {
+                let input = shell.add_space.as_ref().unwrap().search.clone();
+                input.update(cx, |input, cx| input.set_text("", cx));
+            })
+            .unwrap();
+        wait_for!(
+            window
+                .update(cx, |shell, _, _| shell.add_space.as_ref().is_some_and(
+                    |flow| flow.browser.ready().is_some() && !flow.hidden_query
+                ))
+                .unwrap()
+        );
+        assert!(
+            window
+                .update(cx, |shell, _, cx| shell
+                    .add_space_filtered(cx)
+                    .iter()
+                    .all(|row| !row.name.starts_with('.')))
+                .unwrap()
+        );
+        runtime.block_on(registry.shutdown());
+        if let Some(handle) = cx.update(|cx| state.read(cx).engine().cloned()) {
+            runtime.block_on(handle.shutdown());
+        }
+        drop(listener);
+        runtime.block_on(remote.shutdown());
+    }
 }
 
 /// Segment-aware "is `path` at or under `base`" (`/media/a` is not under
@@ -442,6 +684,28 @@ impl Shell {
             cx.new(|cx| ComposerInput::with_context("Search projects…", "PaletteSearch", cx));
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
+                let Some(flow) = this.add_space.as_mut() else {
+                    return;
+                };
+                if flow.manual_task.is_some() && flow.submit_task.is_none() {
+                    flow.submit_busy = false;
+                }
+                flow.revision += 1;
+                flow.manual = None;
+                flow.manual_task = None;
+                flow.error = None;
+                let text = flow.search.read(cx).text().to_string();
+                if manual_path_query(&text) {
+                    this.prepare_manual_space(false, false, cx);
+                    return;
+                }
+                let show_hidden = text.starts_with('.');
+                let reload = show_hidden != flow.hidden_query;
+                flow.hidden_query = show_hidden;
+                let path = flow.browser_path.clone();
+                if reload {
+                    this.load_space_folders(path, cx);
+                }
                 if let Some(menu) = this.spaces_menu.open_mut() {
                     menu.active = 0;
                 }
@@ -1590,6 +1854,11 @@ impl Shell {
         });
         let has_device = device.is_some();
         self.add_space = Some(AddSpaceFlow {
+            identity: uuid::Uuid::new_v4(),
+            revision: 0,
+            manual: None,
+            manual_task: None,
+            hidden_query: false,
             device,
             search,
             browser: Loadable::Idle,
@@ -1623,6 +1892,15 @@ impl Shell {
         if flow.device.as_ref().is_some_and(|d| d.id == device.id) {
             return;
         }
+        if flow.submit_busy {
+            return;
+        }
+        flow.revision += 1;
+        flow.manual = None;
+        flow.manual_task = None;
+        flow.load_task = None;
+        flow.drives_task = None;
+        flow.hidden_query = false;
         flow.device = Some(device);
         flow.browser = Loadable::Idle;
         flow.drives = Loadable::Idle;
@@ -1661,7 +1939,12 @@ impl Shell {
     /// Failures stay silent — the section just shows Home; the folder
     /// browser's own error row already covers "device didn't respond".
     fn load_space_drives(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.add_space.as_ref().and_then(|flow| flow.device.as_ref()).and_then(|device| self.state.read(cx).target_for_id(&device.id).ok()) else {
+        let Some(engine) = self
+            .add_space
+            .as_ref()
+            .and_then(|flow| flow.device.as_ref())
+            .and_then(|device| self.state.read(cx).target_for_id(&device.id).ok())
+        else {
             return;
         };
         let local = self.state.read(cx).local_device_id.clone();
@@ -1669,6 +1952,7 @@ impl Shell {
             return;
         };
         let device_id = flow.device.as_ref().map(|d| d.id.clone());
+        let identity = flow.identity;
         flow.drives = Loadable::Loading;
         flow.drives_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
@@ -1687,6 +1971,11 @@ impl Shell {
                 .await;
             this.update(cx, |shell, cx| {
                 if let Some(flow) = shell.add_space.as_mut() {
+                    if flow.identity != identity
+                        || flow.device.as_ref().map(|d| &d.id) != device_id.as_ref()
+                    {
+                        return;
+                    }
                     flow.drives = match result {
                         Ok(value) => match serde_json::from_value::<DriveListing>(value) {
                             Ok(listing) => Loadable::Ready(listing.drives),
@@ -1712,6 +2001,10 @@ impl Shell {
         };
         let dirs = browser_rows(listing);
         let query = flow.search.read(cx).text().to_string();
+        let dirs: Vec<_> = dirs
+            .into_iter()
+            .filter(|entry| query.starts_with('.') || !entry.name.starts_with('.'))
+            .collect();
         let names: Vec<&str> = dirs.iter().map(|e| e.name.as_str()).collect();
         popover::filter_indices(&query, &names)
             .into_iter()
@@ -1724,6 +2017,14 @@ impl Shell {
     /// instead — `/disk2⏎` must work, not sit on "No folders match" (an
     /// absolute query can never match a folder name anyway).
     fn add_space_open_active(&mut self, cx: &mut Context<Self>) {
+        if self
+            .add_space
+            .as_ref()
+            .is_some_and(|flow| manual_path_query(flow.search.read(cx).text().as_ref()))
+        {
+            self.prepare_manual_space(false, true, cx);
+            return;
+        }
         let rows = self.add_space_filtered(cx);
         let Some(flow) = self.add_space.as_ref() else {
             return;
@@ -1861,7 +2162,12 @@ impl Shell {
 
     /// ListFolders on the flow's device (relay-forwarded when remote).
     pub(super) fn load_space_folders(&mut self, path: Option<String>, cx: &mut Context<Self>) {
-        let Some(engine) = self.add_space.as_ref().and_then(|flow| flow.device.as_ref()).and_then(|device| self.state.read(cx).target_for_id(&device.id).ok()) else {
+        let Some(engine) = self
+            .add_space
+            .as_ref()
+            .and_then(|flow| flow.device.as_ref())
+            .and_then(|device| self.state.read(cx).target_for_id(&device.id).ok())
+        else {
             return;
         };
         let local = self.state.read(cx).local_device_id.clone();
@@ -1869,13 +2175,21 @@ impl Shell {
             return;
         };
         let device_id = flow.device.as_ref().map(|d| d.id.clone());
+        let identity = flow.identity;
+        let query = flow.search.read(cx).text().to_string();
+        flow.revision += 1;
+        flow.manual = None;
+        flow.manual_task = None;
+        flow.hidden_query = query.starts_with('.');
         let went_home = path.is_none();
+        let hidden_query = query.starts_with('.');
         flow.browser_path = path.clone();
         flow.browser = Loadable::Loading;
         flow.active = 0;
         flow.list_scroll.set_offset(gpui::Point::default());
         flow.load_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
+            params.insert("query".into(), serde_json::Value::String(query));
             if let Some(p) = &path {
                 params.insert("path".into(), serde_json::Value::String(p.clone()));
             }
@@ -1894,6 +2208,14 @@ impl Shell {
                 .await;
             this.update(cx, |shell, cx| {
                 if let Some(flow) = shell.add_space.as_mut() {
+                    if flow.identity != identity
+                        || flow.device.as_ref().map(|d| &d.id) != device_id.as_ref()
+                        || flow.browser_path != path
+                        || flow.hidden_query != hidden_query
+                        || manual_path_query(flow.search.read(cx).text().as_ref())
+                    {
+                        return;
+                    }
                     flow.browser = match result {
                         Ok(value) => match serde_json::from_value::<FolderListing>(value) {
                             Ok(listing) => {
@@ -1916,9 +2238,84 @@ impl Shell {
         }));
     }
 
-    /// Create the space for the browser's current folder.
+    /// Probe and optionally create a manual path on the selected engine.
+    fn prepare_manual_space(&mut self, create: bool, submit: bool, cx: &mut Context<Self>) {
+        let Some(engine) = self
+            .add_space
+            .as_ref()
+            .and_then(|flow| flow.device.as_ref())
+            .and_then(|device| self.state.read(cx).target_for_id(&device.id).ok())
+        else {
+            return;
+        };
+        let Some(flow) = self.add_space.as_mut() else {
+            return;
+        };
+        if flow.submit_busy {
+            return;
+        }
+        let Some(device) = flow.device.as_ref() else {
+            return;
+        };
+        let device_id = device.id.clone();
+        let identity = flow.identity;
+        let revision = flow.revision;
+        let path = flow.search.read(cx).text().trim().to_owned();
+        flow.submit_busy = submit;
+        flow.error = None;
+        flow.manual_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.client().call(methods::PREPARE_SPACE_PATH,
+                serde_json::json!({"path":path,"createIfMissing":create,"targetDeviceId":device_id})).await
+                .map_err(|error| error.to_string())
+                .and_then(|value| serde_json::from_value::<roboco_engine::space_paths::SpacePath>(value).map_err(|error| error.to_string()));
+            this.update(cx, |shell, cx| {
+                let Some(flow) = shell.add_space.as_mut() else { return; };
+                if flow.identity != identity || flow.revision != revision || flow.device.as_ref().map(|d| &d.id) != Some(&device_id) { return; }
+                flow.submit_busy = false;
+                let add = match result {
+                    Ok(path) => {
+                        let add = submit && path.exists;
+                        if add {
+                            flow.browser = Loadable::Ready(FolderListing { path:path.path.clone(), entries:Vec::new(), truncated:false });
+                            flow.browser_repo = path.git_detected;
+                        }
+                        flow.manual = Some(path);
+                        add
+                    }
+                    Err(error) => { flow.error = Some(error.into()); false }
+                };
+                if add { shell.submit_browsed_space(cx); }
+                cx.notify();
+            }).ok();
+        }));
+        cx.notify();
+    }
+
+    /// Create the space for the browser's current folder or typed path.
     fn submit_add_space(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.add_space.as_ref().and_then(|flow| flow.device.as_ref()).and_then(|device| self.state.read(cx).target_for_id(&device.id).ok()) else {
+        if self
+            .add_space
+            .as_ref()
+            .is_some_and(|flow| manual_path_query(flow.search.read(cx).text().as_ref()))
+        {
+            let create = self
+                .add_space
+                .as_ref()
+                .and_then(|flow| flow.manual.as_ref())
+                .is_some_and(|path| !path.exists);
+            self.prepare_manual_space(create, true, cx);
+            return;
+        }
+        self.submit_browsed_space(cx);
+    }
+
+    fn submit_browsed_space(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self
+            .add_space
+            .as_ref()
+            .and_then(|flow| flow.device.as_ref())
+            .and_then(|device| self.state.read(cx).target_for_id(&device.id).ok())
+        else {
             return;
         };
         let Some(flow) = self.add_space.as_ref() else {
@@ -1954,8 +2351,12 @@ impl Shell {
             return;
         };
         flow.submit_busy = true;
+        let flow_identity = flow.identity;
         flow.error = None;
-        let space_id = crate::engine_registry::ScopedId::encode(engine.key(), &uuid::Uuid::new_v4().to_string());
+        let space_id = crate::engine_registry::ScopedId::encode(
+            engine.key(),
+            &uuid::Uuid::new_v4().to_string(),
+        );
         // Optimistic echo: the watch frame carrying the real row replaces it
         // by id (apply_spaces re-sorts; same-id upsert is idempotent).
         let space = Space {
@@ -1987,8 +2388,14 @@ impl Shell {
             this.update(cx, |shell, cx| {
                 match result {
                     Ok(_) => {
-                        shell.add_space = None;
-                        shell.land_in_space(submit_id.clone(), cx);
+                        if shell
+                            .add_space
+                            .as_ref()
+                            .is_some_and(|flow| flow.identity == flow_identity)
+                        {
+                            shell.add_space = None;
+                            shell.land_in_space(submit_id.clone(), cx);
+                        }
                     }
                     Err(err) => {
                         // Roll the optimistic row back; surface the error inline.
@@ -1997,6 +2404,9 @@ impl Shell {
                             cx.notify();
                         });
                         if let Some(flow) = shell.add_space.as_mut() {
+                            if flow.identity != flow_identity {
+                                return;
+                            }
                             flow.submit_busy = false;
                             flow.error = Some(format!("{err}").into());
                         }
@@ -2231,7 +2641,16 @@ impl Shell {
             .items_center()
             .gap(px(4.0))
             .text_size(crate::typography::ui_rems(12.0))
-            .when(submit_busy || listing.is_none(), |el| el.opacity(0.6))
+            .when(
+                submit_busy
+                    || (listing.is_none()
+                        && self
+                            .add_space
+                            .as_ref()
+                            .and_then(|flow| flow.manual.as_ref())
+                            .is_none()),
+                |el| el.opacity(0.6),
+            )
             .on_click(cx.listener(|this, _, _, cx| this.submit_add_space(cx)))
             .when(!submit_busy, |el| {
                 el.child(
@@ -2239,7 +2658,18 @@ impl Shell {
                         .size(px(11.0))
                         .text_color(theme.on_solid.opacity(0.8)),
                 )
-                .child(SharedString::from("Enter"))
+                .child(SharedString::from(
+                    if self
+                        .add_space
+                        .as_ref()
+                        .and_then(|flow| flow.manual.as_ref())
+                        .is_some_and(|path| !path.exists)
+                    {
+                        "Create and add"
+                    } else {
+                        "Enter"
+                    },
+                ))
             })
             .when(submit_busy, |el| el.child(SharedString::from("Adding…")));
         // Header and footer sit a shade DEEPER than the body (the shared
