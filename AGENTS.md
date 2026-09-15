@@ -17,10 +17,10 @@ Before refreshing the mirror or porting a commit, follow [the upstream port work
 
 Rename mapping for retained code:
 
-- `zeron-*` crates / `zeron_*` libs ? `roboco-*` / `roboco_*`
-- `apps/zeron/` ? `apps/roboco/`
-- `ZERON_*` env vars ? `ROBOCO_*`
-- `sh.zeron.*` bundle ids ? `sh.roboco.*`, `zeron://` links ? `roboco://`
+- `zeron-*` crates / `zeron_*` libs -> `roboco-*` / `roboco_*`
+- `apps/zeron/` -> `apps/roboco/`
+- `ZERON_*` env vars -> `ROBOCO_*`
+- `sh.zeron.*` bundle ids -> `sh.roboco.*`, `zeron://` links -> `roboco://`
 
 Preserve the engine-local pairing architecture; upstream ports must not restore edge, WorkOS, sync rooms, or iOS.
 
@@ -48,23 +48,21 @@ GPUI comes from our forks, pinned by rev in the root `Cargo.toml`:
 
 Custom gpui work goes on branches of `hoangvu12/zui` first, then gets pinned here by rev.
 
-## Rebrand boundaries (do not "fix" these)
+## Rebrand boundaries
 
 Still zeron-branded on purpose:
 
 - `zeronsh` org references and PR/issue links
-- `zeron.sh` / `edge.zeron.sh` URLs — the app syncs via zeron's public edge; we don't run our own
-- `apps/ios/`, `apps/landing/`, `apps/www-redirect/`, `edge/` — upstream's deployable infra
 - `docs/research/` — historical research notes
 - `ZERON_GPU_STATS` — env var owned by the zui fork, not this repo
 
 ## CI (Windows + Linux only)
 
 - `windows.yml` — Windows tests (PR + push)
-- `ui-tests.yml` — ubuntu jobs only (session sync, UI regressions, linux browser)
+- `ui-tests.yml` — ubuntu jobs only (engine-local recovery, UI regressions, linux browser)
 - `preview-tests.yml` — ubuntu (preview/proto tests)
 - `release.yml` — tag `v*`: linux x86_64+aarch64 tarballs + windows portable zip → GitHub Release with `manifest.json` (updater checksums). No macOS/iOS/R2.
-- Deleted on purpose: `deploy.yml` (zeron.sh infra), `testflight.yml` (iOS). Expect these to reappear on upstream merges — delete them again in the merge commit.
+- Keep CI focused on Roboco engine/app builds, tests, and GitHub releases. Removed cloud and iOS deployment workflows stay outside upstream ports.
 
 ## Naming conventions
 

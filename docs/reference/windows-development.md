@@ -61,7 +61,7 @@ on Linux and macOS. To run the engine and harness checks locally:
 ```powershell
 cargo test --locked -p roboco-engine -p roboco-harness --lib
 cargo test --locked -p roboco-harness --features native-fixture --test codex_availability --test windows_native
-cargo test --locked -p roboco-engine --test codex_catalog --test codex_login_resolution --test auth
+cargo test --locked -p roboco-engine --test codex_catalog --test codex_login_resolution --test engine_local --test local_first --test local_profiles
 ```
 
 Fixtures use synthetic agents, so these tests do not establish authenticated
