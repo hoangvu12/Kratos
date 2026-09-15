@@ -200,6 +200,20 @@ struct RegistryState {
     entries: BTreeMap<EngineKey, Entry>,
     tasks: BTreeMap<EngineKey, tokio::task::JoinHandle<()>>,
 }
+/// Command for the registry's single cache-writer task. Writes flow through
+/// one FIFO channel so the newest rows always win the rename: concurrent
+/// `save_rows` calls can persist out of order, and a stale frame would then
+/// overwrite the latest history. `Flush` rides the same queue, letting
+/// `forget`/`shutdown` prove every earlier write hit disk before they touch
+/// the cache directory (an orphaned `spawn_blocking` write otherwise races
+/// `remove_dir_all` with ENOTEMPTY).
+enum CacheCommand {
+    Save {
+        key: String,
+        rows: crate::engine_cache::CachedRows,
+    },
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
 struct Inner {
     path: PathBuf,
     configuration_error: Option<String>,
@@ -208,6 +222,7 @@ struct Inner {
     updates: watch::Sender<RegistrySnapshot>,
     changes: tokio::sync::Mutex<()>,
     cache: crate::engine_cache::EngineCache,
+    cache_tx: tokio::sync::mpsc::UnboundedSender<CacheCommand>,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -387,6 +402,25 @@ impl EngineRegistry {
                 entry.snapshot.spaces_loaded = true;
             }
         }
+        let (cache_tx, mut cache_rx) = tokio::sync::mpsc::unbounded_channel::<CacheCommand>();
+        let writer_cache = cache.clone();
+        tokio::task::spawn(async move {
+            while let Some(command) = cache_rx.recv().await {
+                match command {
+                    CacheCommand::Save { key, rows } => {
+                        let cache = writer_cache.clone();
+                        if let Ok(Err(error)) =
+                            tokio::task::spawn_blocking(move || cache.save_rows(&key, &rows)).await
+                        {
+                            tracing::warn!(%error, "Could not save engine history");
+                        }
+                    }
+                    CacheCommand::Flush(done) => {
+                        let _ = done.send(());
+                    }
+                }
+            }
+        });
         let registry = Self {
             inner: Arc::new(Inner {
                 path,
@@ -399,6 +433,7 @@ impl EngineRegistry {
                 updates,
                 changes: tokio::sync::Mutex::new(()),
                 cache,
+                cache_tx,
             }),
         };
         registry.publish();
@@ -506,9 +541,15 @@ impl EngineRegistry {
             }
             return Err(err);
         }
-        if let Some(task) = lock(&self.inner.state).tasks.remove(key) {
+        let task = lock(&self.inner.state).tasks.remove(key);
+        if let Some(task) = task {
             task.abort();
+            let _ = task.await;
         }
+        // No new write can register once the engine task is cancelled and the
+        // `changes` lock is held; joining the drained writes keeps an
+        // in-flight save from recreating the directory being removed.
+        self.flush_cache_writes().await;
         let cache = self.inner.cache.clone();
         let key = key.0.clone();
         tokio::task::spawn_blocking(move || cache.forget_engine(&key)).await??;
@@ -528,7 +569,18 @@ impl EngineRegistry {
             task.abort();
             let _ = task.await;
         }
+        self.flush_cache_writes().await;
         self.publish();
+    }
+    /// Prove every cache write queued before this call has hit disk. The flush
+    /// marker rides the writer's FIFO channel behind those writes; callers
+    /// hold the `changes` lock (or have cancelled every engine task), which is
+    /// what stops a new save racing the drain.
+    async fn flush_cache_writes(&self) {
+        let (done, receipt) = tokio::sync::oneshot::channel();
+        if self.inner.cache_tx.send(CacheCommand::Flush(done)).is_ok() {
+            let _ = receipt.await;
+        }
     }
     fn persist(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
@@ -763,12 +815,15 @@ async fn cache_rows(weak: &Weak<Inner>, key: &EngineKey) {
     else {
         return;
     };
-    let cache = inner.cache.clone();
-    let key = key.0.clone();
-    if let Ok(Err(error)) = tokio::task::spawn_blocking(move || cache.save_rows(&key, &rows)).await
-    {
-        tracing::warn!(%error, "Could not save engine history");
-    }
+    // The single writer applies saves in submission order, so the newest
+    // frame always wins the rename onto rows.json; sending under the
+    // `changes` lock keeps the queue ordered against forget/shutdown.
+    let _ = inner
+        .cache_tx
+        .send(CacheCommand::Save {
+            key: key.0.clone(),
+            rows,
+        });
 }
 fn decode<T: DeserializeOwned>(value: Option<Value>) -> Result<T, RpcError> {
     serde_json::from_value(value.ok_or(RpcError::Closed)?)
