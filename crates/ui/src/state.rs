@@ -17,6 +17,9 @@
 //! Pure logic (sort order, staleness, gate phase) lives in free functions with
 //! unit tests; rendering reads them.
 
+use crate::engine_registry::{
+    EngineConnectionState, EngineRegistry, EngineTarget, RegistrySnapshot, ScopedId,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -69,7 +72,7 @@ pub enum EngineMode {
 /// teardown.
 #[async_trait]
 trait EngineBackend: Send + Sync {
-    fn client(&self) -> &RpcClient;
+    fn client(&self) -> &Arc<RpcClient>;
     fn mode(&self) -> EngineMode;
     /// Graceful teardown (drains runs / flushes docs for the in-process engine).
     async fn shutdown(&self);
@@ -82,12 +85,12 @@ struct InProcessEngine {
     /// Serves this engine to other viewports over the IPC port. `None` when the
     /// port was already taken — the window still works over its own transport.
     ipc_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    client: RpcClient,
+    client: Arc<RpcClient>,
 }
 
 #[async_trait]
 impl EngineBackend for InProcessEngine {
-    fn client(&self) -> &RpcClient {
+    fn client(&self) -> &Arc<RpcClient> {
         &self.client
     }
     fn mode(&self) -> EngineMode {
@@ -185,7 +188,7 @@ struct RemoteEngine {
 
 #[async_trait]
 impl EngineBackend for RemoteEngine {
-    fn client(&self) -> &RpcClient {
+    fn client(&self) -> &Arc<RpcClient> {
         &self.client
     }
     fn mode(&self) -> EngineMode {
@@ -264,7 +267,7 @@ impl EngineHandle {
             state: state_rx.clone(),
             service: assembled_service.clone(),
         });
-        let client = memory_client(service.clone());
+        let client = Arc::new(memory_client(service.clone()));
 
         // Serve the same service on the IPC port so a terminal viewport can
         // attach to this window's engine with no setup. Deliberately the
@@ -274,7 +277,13 @@ impl EngineHandle {
         //
         // Best-effort — losing the bind race with another engine costs other
         // viewports, not this one.
-        let ipc_task = match roboco_engine::serve_engine_ipc(engine_config.ipc_port, service, &engine_config.data_dir).await {
+        let ipc_task = match roboco_engine::serve_engine_ipc(
+            engine_config.ipc_port,
+            service,
+            &engine_config.data_dir,
+        )
+        .await
+        {
             Ok(task) => Some(task),
             Err(err) => {
                 tracing::warn!(
@@ -582,6 +591,8 @@ pub struct AppState {
     /// bootstrap so child views can persist small preference files.
     pub data_dir: Option<PathBuf>,
     engine: Option<EngineHandle>,
+    registry: Option<EngineRegistry>,
+    pub registry_snapshot: RegistrySnapshot,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
     change_requests: ChangeRequestClientState,
@@ -653,6 +664,8 @@ impl AppState {
             update: None,
             data_dir: None,
             engine: None,
+            registry: None,
+            registry_snapshot: RegistrySnapshot::default(),
             watch_tasks: Vec::new(),
             transcript_task: None,
             change_requests: ChangeRequestClientState::default(),
@@ -1070,7 +1083,7 @@ impl AppState {
         if self.sub_watch_tasks.contains_key(&doc_id) {
             return;
         }
-        let Some(handle) = self.engine.clone() else {
+        let Ok(handle) = self.target_for_id(&doc_id) else {
             return;
         };
         self.sub_transcripts.entry(doc_id.clone()).or_default();
@@ -1367,6 +1380,15 @@ impl AppState {
     /// from slow sync. The local device is trivially online; unknown devices
     /// get the benefit of the doubt (no evidence — don't cry wolf).
     pub fn device_online(&self, device_id: &str, now: DateTime<Utc>) -> bool {
+        if let Ok(scope) = ScopedId::parse(device_id)
+            && let Some(engine) = self
+                .registry_snapshot
+                .engines
+                .iter()
+                .find(|e| e.key == scope.engine)
+        {
+            return engine.state == EngineConnectionState::Connected;
+        }
         if self.local_device_id.as_deref() == Some(device_id) {
             return true;
         }
@@ -1480,11 +1502,30 @@ impl AppState {
         self.engine.as_ref()
     }
 
+    pub fn registry(&self) -> Option<&EngineRegistry> {
+        self.registry.as_ref()
+    }
+    pub fn target_for_id(&self, id: &str) -> Result<EngineTarget, RpcError> {
+        self.registry
+            .as_ref()
+            .ok_or(RpcError::Closed)?
+            .resolve(id)
+            .map(|(target, _)| target)
+    }
+    pub fn local_target(&self) -> Result<EngineTarget, RpcError> {
+        self.registry
+            .as_ref()
+            .map(EngineRegistry::local)
+            .ok_or(RpcError::Closed)
+    }
+
     /// Drop every account-scoped view and subscription after its runtime has
     /// stopped. The next bootstrap must never render rows from the previous
     /// account while the local profile is opening.
     pub fn prepare_runtime_replacement(&mut self, cx: &mut Context<Self>) {
         self.engine = None;
+        self.registry = None;
+        self.registry_snapshot = RegistrySnapshot::default();
         self.watch_tasks.clear();
         self.transcript_task = None;
         self.change_request_tasks.clear();
@@ -1570,20 +1611,12 @@ impl AppState {
         if let Some(task) = spawn_deferred_engine_watch(cx, handle.clone()) {
             watch_tasks.push(task);
         }
+        watch_tasks.push(spawn_registry_watch(
+            cx,
+            handle.clone(),
+            self.data_dir.clone(),
+        ));
         watch_tasks.extend([
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::WATCH_SESSIONS,
-                AppState::apply_sessions,
-            ),
-            spawn_chats_watch(cx, handle.clone()),
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::WATCH_DEVICES,
-                AppState::apply_devices,
-            ),
             spawn_watch(
                 cx,
                 handle.clone(),
@@ -1602,10 +1635,6 @@ impl AppState {
                     true
                 },
             ),
-            spawn_watch(cx, handle.clone(), methods::WATCH_SPACES, |state, value| {
-                state.apply_spaces(value);
-                true
-            }),
             spawn_watch(
                 cx,
                 handle.clone(),
@@ -1622,22 +1651,11 @@ impl AppState {
         // EngineInfo is part of the attachment boundary: views must know which
         // data profile they reached before they are allowed to render Ready.
         self.connection = ConnectionStatus::Ready;
-        // Re-subscribe the transcript if a chat was already selected (reconnect path).
-        if let Some(chat_id) = self.selected_chat.clone() {
-            self.transcript_task =
-                Some(spawn_transcript_watch(cx, handle.clone(), chat_id.clone()));
-            if handle
-                .engine_info()
-                .supports(roboco_proto::capabilities::MESSAGE_QUEUE_V1)
-            {
-                self.queue_task = Some(spawn_queue_watch(cx, handle, chat_id));
-            }
-        }
         cx.notify();
     }
 
     fn reconcile_change_request_watches(&mut self, cx: &mut Context<Self>) {
-        let Some(handle) = self.engine.clone() else {
+        let Some(_) = self.registry.as_ref() else {
             self.change_request_tasks.clear();
             return;
         };
@@ -1658,6 +1676,9 @@ impl AppState {
             if self.change_request_tasks.contains_key(&target) {
                 continue;
             }
+            let Ok(handle) = self.target_for_id(&target.device_id) else {
+                continue;
+            };
             let task = spawn_change_request_watch(
                 cx,
                 handle.clone(),
@@ -1751,7 +1772,9 @@ impl AppState {
             }
             self.mark_chat_seen(id, cx);
         }
-        if let (Some(chat_id), Some(handle)) = (chat_id, self.engine.clone()) {
+        if let Some(chat_id) = chat_id
+            && let Ok(handle) = self.target_for_id(&chat_id)
+        {
             self.transcript_task =
                 Some(spawn_transcript_watch(cx, handle.clone(), chat_id.clone()));
             if handle
@@ -1770,8 +1793,10 @@ impl AppState {
     /// document itself did not change and therefore emitted no new frame.
     pub(crate) fn refresh_selected_queue(&mut self, cx: &mut Context<Self>) {
         self.queue_task = None;
-        let (Some(chat_id), Some(handle)) = (self.selected_chat.clone(), self.engine.clone())
-        else {
+        let Some(chat_id) = self.selected_chat.clone() else {
+            return;
+        };
+        let Ok(handle) = self.target_for_id(&chat_id) else {
             return;
         };
         if handle
@@ -1818,7 +1843,7 @@ impl AppState {
         }
         chat.last_seen_at = Some(Utc::now());
         cx.notify();
-        let Some(handle) = self.engine.clone() else {
+        let Ok(handle) = self.target_for_id(chat_id) else {
             return;
         };
         let chat_id = chat_id.to_string();
@@ -1861,52 +1886,84 @@ fn spawn_deferred_engine_watch(
 /// Chats watch. Boot selection is the shell's job (it lands on the first
 /// restored open tab, device-local state this entity can't see); this task
 /// only pumps frames.
-fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<()> {
+fn spawn_registry_watch(
+    cx: &mut Context<AppState>,
+    handle: EngineHandle,
+    data_dir: Option<PathBuf>,
+) -> Task<()> {
+    let path = data_dir
+        .unwrap_or_else(|| std::env::temp_dir().join("roboco-ui-unpersisted"))
+        .join("paired-engines-v1.json");
+    let info = handle.engine_info().clone();
+    let client = handle.inner.client().clone();
+    let reconnect = match handle.mode() {
+        EngineMode::Remote { url } => Some(url),
+        EngineMode::InProcess => None,
+    };
+    let open = Tokio::spawn(cx, async move {
+        EngineRegistry::open(path, info, client, reconnect).await
+    });
     cx.spawn(async move |this, cx| {
-        // Resubscribe loop (same contract as the transcript watch): a daemon
-        // restart or RPC drop ends the stream, and a bare return here froze
-        // the sidebar until app restart — new chats, renames and archives
-        // from every device silently stopped arriving.
-        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
-        loop {
-            let mut rx = match handle
-                .client()
-                .subscribe(methods::WATCH_CHATS, serde_json::json!({}))
-                .await
-            {
-                Ok(rx) => rx,
-                Err(err) => {
-                    tracing::debug!(error = %err, "chats watch unavailable; retrying");
-                    if this.update(cx, |_, _| {}).is_err() {
-                        return;
-                    }
-                    cx.background_executor().timer(RETRY_DELAY).await;
-                    continue;
-                }
-            };
-            while let Some(value) = rx.recv().await {
-                let parsed: Vec<Chat> = match serde_json::from_value(value) {
-                    Ok(parsed) => parsed,
-                    Err(err) => {
-                        tracing::warn!(error = %err, "dropping malformed chats frame");
-                        continue;
-                    }
-                };
-                let alive = this.update(cx, |state, cx| {
-                    state.apply_chats(parsed);
-                    state.apply_pending_deep_link(cx);
-                    state.reconcile_change_request_watches(cx);
-                    cx.notify();
-                });
-                if alive.is_err() {
-                    return;
-                }
-            }
-            tracing::debug!("chats stream ended; resubscribing");
-            if this.update(cx, |_, _| {}).is_err() {
+        let registry = match open.await {
+            Ok(Ok(registry)) => registry,
+            Ok(Err(error)) => {
+                tracing::error!(%error, "engine registry could not start");
                 return;
             }
-            cx.background_executor().timer(RETRY_DELAY).await;
+            Err(error) => {
+                tracing::error!(%error, "engine registry task failed");
+                return;
+            }
+        };
+        let mut updates = registry.watch();
+        if this
+            .update(cx, |state, _| {
+                state.registry = Some(registry);
+            })
+            .is_err()
+        {
+            return;
+        }
+        loop {
+            let snapshot = updates.borrow_and_update().clone();
+            if this
+                .update(cx, |state, cx| {
+                    let projected = snapshot.projected();
+                    let chats_loaded = snapshot.engines.iter().any(|e| e.chats_loaded);
+                    let spaces_loaded = snapshot.engines.iter().any(|e| e.spaces_loaded);
+                    state.registry_snapshot = snapshot;
+                    if chats_loaded {
+                        state.apply_chats(projected.chats);
+                    }
+                    if spaces_loaded {
+                        state.apply_spaces(projected.spaces);
+                    }
+                    state.apply_devices(projected.devices);
+                    state.apply_sessions(projected.sessions);
+                    state.apply_pending_deep_link(cx);
+                    state.reconcile_change_request_watches(cx);
+                    if state.transcript_task.is_none()
+                        && let Some(id) = state.selected_chat.clone()
+                        && let Ok(target) = state.target_for_id(&id)
+                    {
+                        state.transcript_task =
+                            Some(spawn_transcript_watch(cx, target.clone(), id.clone()));
+                        if target
+                            .engine_info()
+                            .supports(roboco_proto::capabilities::MESSAGE_QUEUE_V1)
+                        {
+                            state.queue_task = Some(spawn_queue_watch(cx, target, id));
+                        }
+                    }
+                    cx.notify();
+                })
+                .is_err()
+            {
+                return;
+            }
+            if updates.changed().await.is_err() {
+                return;
+            }
         }
     })
 }
@@ -1915,7 +1972,7 @@ pub use roboco_proto::version_triple;
 
 fn spawn_change_request_watch(
     cx: &mut Context<AppState>,
-    handle: EngineHandle,
+    handle: EngineTarget,
     target: ChangeRequestWatchKey,
     local_device_id: Option<String>,
 ) -> Task<()> {
@@ -2096,7 +2153,7 @@ fn spawn_local_device_probe(cx: &mut Context<AppState>, handle: EngineHandle) ->
 
 fn spawn_transcript_watch(
     cx: &mut Context<AppState>,
-    handle: EngineHandle,
+    handle: EngineTarget,
     chat_id: String,
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {
@@ -2181,7 +2238,7 @@ fn spawn_transcript_watch(
 /// has already sent.
 fn spawn_queue_watch(
     cx: &mut Context<AppState>,
-    handle: EngineHandle,
+    handle: EngineTarget,
     chat_id: String,
 ) -> Task<()> {
     #[derive(serde::Deserialize)]
@@ -2240,7 +2297,7 @@ fn spawn_queue_watch(
 /// subagent tab can outlive chat switches.
 fn spawn_subagent_watch(
     cx: &mut Context<AppState>,
-    handle: EngineHandle,
+    handle: EngineTarget,
     doc_id: String,
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {

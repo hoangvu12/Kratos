@@ -139,7 +139,13 @@ impl RpcClient {
     }
 
     /// Resolves when the transport stops accepting frames.
-    pub async fn closed(&self) { self.out.closed().await; }
+    pub fn is_closed(&self) -> bool {
+        self.out.is_closed()
+    }
+
+    pub async fn closed(&self) {
+        self.out.closed().await;
+    }
 
     /// Unary request.
     pub async fn call(

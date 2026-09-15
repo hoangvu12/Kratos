@@ -148,9 +148,11 @@ struct RegistryState {
 }
 struct Inner {
     path: PathBuf,
+    runtime: tokio::runtime::Handle,
     state: Mutex<RegistryState>,
     updates: watch::Sender<RegistrySnapshot>,
     changes: tokio::sync::Mutex<()>,
+    cache: crate::engine_cache::EngineCache,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -185,6 +187,20 @@ impl EngineTarget {
     pub fn engine_info(&self) -> EngineInfo {
         self.info.clone()
     }
+    pub fn connection_state(&self) -> EngineConnectionState {
+        self.registry
+            .upgrade()
+            .and_then(|inner| {
+                lock(&inner.state)
+                    .entries
+                    .get(&self.key)
+                    .map(|e| e.snapshot.state.clone())
+            })
+            .unwrap_or(EngineConnectionState::Off)
+    }
+    pub fn is_connected(&self) -> bool {
+        self.live().is_ok()
+    }
     fn live(&self) -> Result<Arc<RpcClient>, RpcError> {
         let inner = self.registry.upgrade().ok_or(RpcError::Closed)?;
         let state = lock(&inner.state);
@@ -195,23 +211,49 @@ impl EngineTarget {
         entry
             .client
             .clone()
+            .filter(|client| !client.is_closed())
             .ok_or_else(|| RpcError::Transport("Engine is offline; reconnecting".into()))
     }
     pub async fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
-        self.live()?.call(method, params).await
+        let params = crate::request_routing::wire_params(&self.key, method, params)?;
+        let client = self.live()?;
+        let runtime = self
+            .registry
+            .upgrade()
+            .ok_or(RpcError::Closed)?
+            .runtime
+            .clone();
+        let method = method.to_owned();
+        runtime
+            .spawn(async move {
+                let timeout =
+                    Duration::from_secs(if method.contains("Clone") || method.contains("Fetch") {
+                        900
+                    } else {
+                        30
+                    });
+                tokio::time::timeout(timeout, client.call(&method, params))
+                    .await
+                    .map_err(|_| RpcError::Transport("Engine request timed out".into()))?
+            })
+            .await
+            .map_err(|_| RpcError::Closed)?
     }
+
     pub async fn call_as<T: DeserializeOwned>(
         &self,
         method: &str,
         params: Value,
     ) -> Result<T, RpcError> {
-        self.live()?.call_as(method, params).await
+        serde_json::from_value(self.call(method, params).await?)
+            .map_err(|error| RpcError::Failed(error.to_string()))
     }
     pub async fn subscribe(
         &self,
         method: &str,
         params: Value,
     ) -> Result<mpsc::Receiver<Value>, RpcError> {
+        let params = crate::request_routing::wire_params(&self.key, method, params)?;
         self.live()?.subscribe(method, params).await
     }
     pub async fn subscribe_checked(
@@ -219,6 +261,7 @@ impl EngineTarget {
         method: &str,
         params: Value,
     ) -> Result<roboco_rpc::RpcSubscription, RpcError> {
+        let params = crate::request_routing::wire_params(&self.key, method, params)?;
         self.live()?.subscribe_checked(method, params).await
     }
 }
@@ -275,15 +318,30 @@ impl EngineRegistry {
                 entry(saved.key.clone(), saved.info.clone(), Some(saved)),
             );
         }
+        let cache = crate::engine_cache::EngineCache::new(
+            path.parent().unwrap_or(std::path::Path::new(".")),
+        );
+        for (key, entry) in &mut entries {
+            if let Some(rows) = cache.load_rows(&key.0) {
+                entry.snapshot.chats = rows.chats;
+                entry.snapshot.spaces = rows.spaces;
+                entry.snapshot.devices = rows.devices;
+                entry.snapshot.sessions = rows.sessions;
+                entry.snapshot.chats_loaded = true;
+                entry.snapshot.spaces_loaded = true;
+            }
+        }
         let registry = Self {
             inner: Arc::new(Inner {
                 path,
+                runtime: tokio::runtime::Handle::current(),
                 state: Mutex::new(RegistryState {
                     entries,
                     tasks: BTreeMap::new(),
                 }),
                 updates,
                 changes: tokio::sync::Mutex::new(()),
+                cache,
             }),
         };
         registry.publish();
@@ -390,6 +448,9 @@ impl EngineRegistry {
         if let Some(task) = lock(&self.inner.state).tasks.remove(key) {
             task.abort();
         }
+        let cache = self.inner.cache.clone();
+        let key = key.0.clone();
+        tokio::task::spawn_blocking(move || cache.forget_engine(&key)).await??;
         self.publish();
         Ok(())
     }
@@ -572,18 +633,24 @@ async fn drive(
             "Engine identity changed; pair again".into(),
         ));
     }
-    let mut chats = client
-        .subscribe_checked(methods::WATCH_CHATS, json!({}))
-        .await?;
-    let mut spaces = client
-        .subscribe_checked(methods::WATCH_SPACES, json!({}))
-        .await?;
-    let mut devices = client
-        .subscribe_checked(methods::WATCH_DEVICES, json!({}))
-        .await?;
-    let mut sessions = client
-        .subscribe_checked(methods::WATCH_SESSIONS, json!({}))
-        .await?;
+    let (mut chats, mut spaces, mut devices, mut sessions) =
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let chats = client
+                .subscribe_checked(methods::WATCH_CHATS, json!({}))
+                .await?;
+            let spaces = client
+                .subscribe_checked(methods::WATCH_SPACES, json!({}))
+                .await?;
+            let devices = client
+                .subscribe_checked(methods::WATCH_DEVICES, json!({}))
+                .await?;
+            let sessions = client
+                .subscribe_checked(methods::WATCH_SESSIONS, json!({}))
+                .await?;
+            Ok::<_, RpcError>((chats, spaces, devices, sessions))
+        })
+        .await
+        .map_err(|_| RpcError::Transport("Engine subscriptions timed out".into()))??;
     if !update(weak, key, |e| {
         e.client = Some(client.clone());
         e.snapshot.info = info;
@@ -593,14 +660,46 @@ async fn drive(
     }) {
         return Ok(());
     }
+    let mut health = tokio::time::interval(Duration::from_secs(5));
     loop {
         tokio::select! {
+            _ = health.tick() => {
+                let info: EngineInfo = tokio::time::timeout(Duration::from_secs(5), client.call_as(methods::ENGINE_INFO, json!({}))).await.map_err(|_| RpcError::Transport("Engine health check timed out".into()))??;
+                if info.device_id != expected { return Err(RpcError::Failed("Engine identity changed; pair again".into())); }
+                continue;
+            }
             _ = client.closed() => return Err(RpcError::Closed),
             frame = chats.recv() => { let rows = decode(frame)?; if !update(weak,key,|e| {e.snapshot.chats=rows; e.snapshot.chats_loaded=true;}) {return Ok(());} }
             frame = spaces.recv() => { let rows = decode(frame)?; if !update(weak,key,|e| {e.snapshot.spaces=rows; e.snapshot.spaces_loaded=true;}) {return Ok(());} }
             frame = devices.recv() => { let rows = decode(frame)?; if !update(weak,key,|e| e.snapshot.devices=rows) {return Ok(());} }
             frame = sessions.recv() => { let rows = decode(frame)?; if !update(weak,key,|e| e.snapshot.sessions=rows) {return Ok(());} }
         }
+        cache_rows(weak, key).await;
+    }
+}
+async fn cache_rows(weak: &Weak<Inner>, key: &EngineKey) {
+    let Some(inner) = weak.upgrade() else {
+        return;
+    };
+    let _change = inner.changes.lock().await;
+    let Some(rows) =
+        lock(&inner.state)
+            .entries
+            .get(key)
+            .map(|entry| crate::engine_cache::CachedRows {
+                chats: entry.snapshot.chats.clone(),
+                spaces: entry.snapshot.spaces.clone(),
+                devices: entry.snapshot.devices.clone(),
+                sessions: entry.snapshot.sessions.clone(),
+            })
+    else {
+        return;
+    };
+    let cache = inner.cache.clone();
+    let key = key.0.clone();
+    if let Ok(Err(error)) = tokio::task::spawn_blocking(move || cache.save_rows(&key, &rows)).await
+    {
+        tracing::warn!(%error, "Could not save engine history");
     }
 }
 fn decode<T: DeserializeOwned>(value: Option<Value>) -> Result<T, RpcError> {
