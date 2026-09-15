@@ -136,8 +136,6 @@ pub struct EngineCore {
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
-    /// Peer link cache for `targetDeviceId` routing (attached when edge+auth are ready).
-    links: std::sync::Mutex<Option<Arc<roboco_rpc::LinkCache>>>,
     /// Release checker (attached by [`Engine::assemble_runtime`]) — the
     /// UpdateStatus stream + ApplyUpdate.
     updater: std::sync::Mutex<Option<roboco_update::Updater>>,
@@ -312,7 +310,6 @@ impl EngineCore {
             local_import,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
-            links: std::sync::Mutex::new(None),
             updater: std::sync::Mutex::new(None),
             updater_wake: std::sync::Mutex::new(None),
             _instance_lock: lock,
@@ -350,23 +347,6 @@ impl EngineCore {
         .clone()
     }
 
-    /// Attach the peer link cache — enables `targetDeviceId` routing,
-    /// [`Self::dial_device`], and the doc host's queued-attachment transfers.
-    pub fn set_links(&self, links: Arc<roboco_rpc::LinkCache>) {
-        self.doc_host.set_links(links.clone());
-        *self
-            .links
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(links);
-    }
-
-    pub fn links(&self) -> Option<Arc<roboco_rpc::LinkCache>> {
-        self.links
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
     /// Attach the release checker (before building the RPC service).
     pub fn set_updater_wake(&self, handle: tokio::task::JoinHandle<()>) {
         *self
@@ -389,42 +369,6 @@ impl EngineCore {
             .clone()
     }
 
-    /// A live RPC client to another device's engine through its relay DO (the router's
-    /// dial seam). Cached per device; invalidated + re-dialed on failure.
-    pub async fn dial_device(
-        &self,
-        device_id: &str,
-    ) -> Result<Arc<roboco_rpc::RpcClient>, EngineError> {
-        let links = self
-            .links()
-            .ok_or_else(|| EngineError::Other("peer links unavailable (offline)".into()))?;
-        links
-            .client(device_id)
-            .await
-            .map_err(|e| EngineError::Other(e.to_string()))
-    }
-
-    /// Start hosting our device room: serve the full RPC surface to relay clients and
-    /// warm-open chat docs on nudges (§7 cold-chat command delivery). The token source
-    /// re-reads auth on every (re)dial, so token refreshes take effect at reconnect.
-    pub fn start_host_relay(&self, edge_url: &str) -> roboco_rpc::HostRelay {
-        let auth = self.auth();
-        let config =
-            roboco_rpc::HostRelayConfig::new(edge_url, self.device_id.clone(), Arc::new(auth));
-        let doc_host = self.doc_host.clone();
-        let on_nudge: roboco_rpc::NudgeHandler = Arc::new(move |chat_id: String| {
-            // Opening the doc joins its room + syncs; drain fires on the change
-            // subscription — the command executes with no standing per-chat socket.
-            match doc_host.open(&chat_id) {
-                Ok(_) => tracing::info!(chat = %chat_id, "nudge: chat doc opened"),
-                Err(err) => {
-                    tracing::warn!(chat = %chat_id, error = %err, "nudge: open failed")
-                }
-            }
-        });
-        roboco_rpc::HostRelay::spawn(config, self.rpc_service(), on_nudge)
-    }
-
     pub fn rpc_service(&self) -> Arc<EngineRpc> {
         let mut rpc = EngineRpc::new(
             self.sessions.clone(),
@@ -442,9 +386,6 @@ impl EngineCore {
         )
         .with_auth(self.auth())
         .with_previews(self.previews.clone());
-        if let Some(links) = self.links() {
-            rpc = rpc.with_links(links);
-        }
         if let Some(updater) = self.updater() {
             rpc = rpc.with_updater(updater);
         }
@@ -459,9 +400,6 @@ impl EngineCore {
     /// clearing credentials alone is not a security boundary.
     pub fn disconnect_edge(&self) {
         self.previews.stop();
-        if let Some(links) = self.links() {
-            links.disconnect_all();
-        }
         self.doc_host.disconnect_edge();
         self.workspace.disconnect_edge();
     }
@@ -520,7 +458,6 @@ pub struct Engine {
 /// in-process engine so their production authentication paths cannot diverge.
 pub struct EngineRuntime {
     core: EngineCore,
-    host_relay: std::sync::Mutex<Option<roboco_rpc::HostRelay>>,
 }
 
 /// IPC-only lifecycle control owned by `roboco headless`. The regular
@@ -559,28 +496,12 @@ impl EngineRuntime {
     }
 
     pub fn disconnect_edge(&self) {
-        // Revoke remote reachability before graceful draining. Sessions may
-        // need time to settle; no authenticated relay RPC may enter during
-        // that window after sign-out.
-        self.host_relay
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
         self.core.disconnect_edge();
     }
 
     pub async fn shutdown(&self) {
         self.disconnect_edge();
         self.core.shutdown().await;
-    }
-}
-
-impl Drop for EngineRuntime {
-    fn drop(&mut self) {
-        self.host_relay
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
     }
 }
 
@@ -819,30 +740,7 @@ impl Engine {
         // never waits on — or dies inside — an npm run.
         roboco_harness::acp::prewarm_managed_adapters();
 
-        let host_relay = edge.as_ref().map(|edge| {
-            let mut link_config =
-                roboco_rpc::LinkCacheConfig::new(edge.url.clone(), Arc::new(auth.clone()));
-            // Registry-dark dial gate: devices with no recent presence fail
-            // fast with zero dials; presence returning un-parks them (the
-            // peer-alive hook below clears any cooldown at the same moment).
-            let workspace_for_liveness = core.workspace.clone();
-            link_config.liveness = Some(Arc::new(move |device_id: &str| {
-                workspace_for_liveness.peer_liveness(device_id)
-            }));
-            let links = roboco_rpc::LinkCache::new(link_config);
-            let links_for_presence = links.clone();
-            core.workspace
-                .set_peer_alive_hook(Arc::new(move |device_id: &str| {
-                    links_for_presence.reset_cooldown(device_id);
-                }));
-            core.set_links(links);
-            core.start_host_relay(&edge.url)
-        });
-
-        Ok(EngineRuntime {
-            core,
-            host_relay: std::sync::Mutex::new(host_relay),
-        })
+        Ok(EngineRuntime { core })
     }
 
     /// Run until ctrl-c: auth (dev or WorkOS), sessions engine + doc host + command
