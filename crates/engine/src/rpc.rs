@@ -219,6 +219,8 @@ struct DeleteWorktreeParams {
 struct ListFoldersParams {
     #[serde(default)]
     path: Option<String>,
+    #[serde(default)]
+    query: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1574,10 +1576,27 @@ impl RpcService for EngineRpc {
                 let p: ListFoldersParams = parse_params(params)?;
                 let listing = self
                     .repos
-                    .list_folders(p.path)
+                    .list_folders_for_query(p.path, &p.query)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&listing)
+            }
+            methods::PREPARE_SPACE_PATH => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    path: String,
+                    #[serde(default)]
+                    create_if_missing: bool,
+                }
+                let p: Params = parse_params(params)?;
+                let path = tokio::task::spawn_blocking(move || {
+                    crate::space_paths::prepare(&p.path, p.create_if_missing)
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&path)
             }
             methods::LIST_DRIVES => {
                 let drives = self
