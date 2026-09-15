@@ -1,56 +1,31 @@
 # Roboco
 
-在本地管理你的编码 agent（Claude Code、Codex、Cursor、Grok、Hermes、Pi），也可以打开多设备同步。
+在自己的机器上运行和管理编码 agent，包括 Claude Code、Codex、Cursor、Grok、Hermes 和 Pi。会话和文件由运行它们的引擎保存。
 
 *[English](README.md) | 简体中文*
 
-![Roboco 驱动一个 Claude Code 会话，侧边栏是实时的分支 diff](apps/landing/public/assets/app-screenshot.jpg)
+桌面应用直接连接本地引擎，无需 Roboco 账号。Roboco 支持 Windows 和 Linux，基于 [Zeron](https://github.com/zeronsh/zeron) 开发；上游改动按需移植。
 
-每台设备各跑一个小引擎，会话就存在这台设备上。装完默认是纯本地模式，不用账号，也不用联网。
-
-## 在本地安装运行（Linux）
+## 从源码运行
 
 ```bash
-curl -fsSL https://zeron.sh/install.sh | sh
-roboco status
+git clone https://github.com/hoangvu12/roboco
+cd roboco
+cargo run -p roboco
 ```
 
-安装脚本会马上把守护进程拉起来，重启之后也会自己回来。不需要登录，也不需要配置同步。
-
-日常命令：
+Windows 可使用便携版 ZIP。请将 `roboco-update.json` 保留在 `roboco.exe` 旁边，以支持应用内更新。源码构建请参阅 [Windows 开发说明](docs/reference/windows-development.md)。
 
 ```bash
-roboco status      # 查看本地/同步模式和引擎状态
-roboco update      # 更新到最新版本
-roboco daemon start|stop|restart|status
+roboco headless    # 仅运行引擎
+roboco status      # 查看本地引擎状态
+roboco update      # 更新应用
 ```
 
-## 可选：多设备同步
+## 远程访问
 
-只有想打开账号下的同步工作区时才需要登录。登录会换掉引擎下次启动时用的 profile，所以改之前先停掉守护进程：
+远程访问采用引擎直接配对。桌面客户端分别连接每个引擎；会话、队列和设置始终属于各自的引擎，不进行跨引擎同步，也不依赖账号服务或云中继。
 
-```bash
-roboco daemon stop
-roboco login
-roboco daemon start
-```
-
-之后就可以在一台同步过的设备上起 agent，换另一台设备接着看、接着操作。一台常开的机器，比如 VPS，可以在你合上笔记本之后继续跑这些 agent。
-
-登录不会上传、搬走或导入已有的本地会话。本地会话和它们的附件仍然留在本地 profile 下，切回纯本地模式时会照常出现：
-
-```bash
-roboco daemon stop
-roboco logout
-roboco daemon start
-```
-
-如果有引擎正占着数据目录，`roboco login` 和 `roboco logout` 会拒绝改动凭据。桌面应用同样遵守这条边界：profile 要等下次重启才切换。
-
-macOS 上用桌面版发行包，或者从源码构建 `roboco`，再运行 `roboco daemon install` 装上 launchd 服务。
-
----
-
-想参与开发，或者好奇它怎么跑起来的？[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/zeronsh/roboco)，也可以看 [ARCHITECTURE.md](ARCHITECTURE.md)。
+实现进度见[远程访问规格和任务](.scratch/remote-access/spec.md)。内部结构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 采用 [MIT License](LICENSE)。
