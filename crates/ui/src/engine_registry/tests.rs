@@ -91,8 +91,14 @@ async fn real_engine_reconnect_retains_rows_persists_pairing_and_forgets() {
         )
         .await
         .unwrap();
+    // Wait for the projected rows themselves, not only the loaded flags: a
+    // subscription's first frame can predate the workspace's first publish,
+    // so a loaded flag does not guarantee the rows are visible yet.
     wait_for(&registry, |snapshot| {
+        let projected = snapshot.projected();
         snapshot.engines.len() == 2
+            && projected.chats.len() == 2
+            && projected.spaces.len() == 2
             && snapshot.engines.iter().all(|e| {
                 e.chats_loaded && e.spaces_loaded && e.state == EngineConnectionState::Connected
             })
@@ -202,7 +208,11 @@ async fn damaged_pairing_config_preserves_local_access_and_original_bytes() {
     let registry = EngineRegistry::open(path.clone(), info, client, None)
         .await
         .unwrap();
-    wait_for(&registry, |snapshot| snapshot.engines[0].chats_loaded).await;
+    // Same reasoning as above: wait for the chat row itself to arrive.
+    wait_for(&registry, |snapshot| {
+        !snapshot.engines.is_empty() && snapshot.projected().chats.len() == 1
+    })
+    .await;
     assert_eq!(registry.snapshot().projected().chats.len(), 1);
     assert!(registry.snapshot().configuration_error.is_some());
     assert!(
