@@ -523,6 +523,24 @@ impl RegistryDoc {
         true
     }
 
+    /// Materialize pending local operations without a cloud acknowledgement.
+    /// The engine is the sole authority, so retaining an ever-growing network
+    /// outbox would only slow reads and inflate the persisted snapshot.
+    pub fn commit_local(&mut self) {
+        for batch in std::mem::take(&mut self.pending) {
+            for op in batch.ops {
+                let current = self
+                    .authoritative
+                    .get(&op.kind)
+                    .and_then(|rows| rows.get(&op.id));
+                let (next, _) = apply_op(current, &op);
+                if let Some(row) = next {
+                    self.put_authoritative(row);
+                }
+            }
+        }
+    }
+
     /// Retire an acked batch; returns whether it existed.
     ///
     /// Deliberately does NOT advance the sync cursor: the ack's `seq` is OUR

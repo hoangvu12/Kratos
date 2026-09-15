@@ -899,3 +899,27 @@ fn completion_marker_replicates_and_survives_next_turn() {
     server_round(&mut server, &mut seq, &mut [&mut source, &mut viewer]);
     assert_eq!(viewer.read_sessions().unwrap(), vec![row]);
 }
+
+#[test]
+fn engine_local_commits_preserve_rows_and_tombstones_across_restart() {
+    let mut doc = RegistryDoc::new("engine");
+    doc.enqueue_ops(vec![upsert(&[("title", json!("first"))], 1)]);
+    doc.commit_local();
+    assert!(doc.pending.is_empty());
+    assert_eq!(
+        doc.overlay_row("chats", "chat-1").unwrap().fields["title"],
+        "first"
+    );
+    doc.enqueue_ops(vec![
+        update(&[("title", json!("edited"))], hlc(2)),
+        delete(3),
+    ]);
+    doc.commit_local();
+    let mut restored = RegistryDoc::from_bytes(&doc.to_bytes().unwrap(), "engine").unwrap();
+    assert!(restored.pending.is_empty());
+    assert!(restored.overlay_row("chats", "chat-1").is_none());
+    // A stale pre-delete update must not resurrect the removed chat.
+    restored.enqueue_ops(vec![update(&[("title", json!("stale"))], hlc(2))]);
+    restored.commit_local();
+    assert!(restored.overlay_row("chats", "chat-1").is_none());
+}
