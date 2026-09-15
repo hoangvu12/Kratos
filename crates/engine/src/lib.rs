@@ -358,9 +358,7 @@ pub struct Engine {
     pub config: EngineConfig,
 }
 
-/// A fully assembled identity-scoped engine plus the relay handle whose lifetime
-/// keeps this device reachable. Used by both the headless server and the headed
-/// in-process engine so their production authentication paths cannot diverge.
+/// An assembled local engine, shared by headed and headless operation.
 pub struct EngineRuntime {
     core: EngineCore,
 }
@@ -433,9 +431,7 @@ impl Engine {
         })
     }
 
-    /// Open one already-resolved profile. Synced profiles always keep their
-    /// Edge supervisors alive; temporary token or network failures are runtime
-    /// states, not a reason to permanently assemble an offline engine.
+    /// Open the resolved local profile and start its services.
     pub async fn assemble_runtime(
         config: &EngineConfig,
         profile: EngineProfile,
@@ -496,7 +492,7 @@ impl Engine {
                 roboco_update::InstallKind::WindowsPortable { .. }
             );
         if check_updates {
-            // Release checker: polls {edge}/releases on a 6h cadence; headless
+            // Release checker: polls the release feed on a 6h cadence; headless
             // installs with ROBOCO_AUTO_UPDATE=1 apply + restart themselves — gated
             // on quiescence so a restart never lands under a live run or open PTY.
             let quiescent: roboco_update::QuiescentCheck = {
@@ -516,9 +512,7 @@ impl Engine {
         Ok(EngineRuntime { core })
     }
 
-    /// Run until ctrl-c: auth (dev or WorkOS), sessions engine + doc host + command
-    /// executor, IPC server, and — when edge+auth are ready — the device-room host
-    /// relay + peer link cache (targetDeviceId routing).
+    /// Serve the local engine until a shutdown signal or IPC stop request.
     pub async fn run(self) -> anyhow::Result<()> {
         let config = self.config;
         tracing::info!(data_dir = %config.data_dir.display(), "engine starting");
