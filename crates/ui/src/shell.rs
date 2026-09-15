@@ -31,7 +31,7 @@ use crate::files::{FilesCloseDisposition, FilesEvent, FilesSurface, WorkspacePat
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT, TAB_SLIDE};
-use crate::popover;
+use crate::popover::{self, Loadable};
 use crate::rail;
 use crate::settings::accounts::AccountsPage;
 use crate::settings::appearance::AppearancePage;
@@ -1154,8 +1154,6 @@ pub struct Shell {
     /// Cached: `detect_install` stats `current_exe` and this renders per frame.
     install: roboco_update::InstallKind,
     mutate_task: Option<Task<()>>,
-    /// The one-time local→synced import stream (switch wizard progress step).
-    import_task: Option<Task<()>>,
     /// Title of the chat the import stream is copying right now.
     import_current: Option<SharedString>,
     /// Kept for the failed-gate "Retry" action.
