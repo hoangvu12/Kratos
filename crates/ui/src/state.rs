@@ -2438,6 +2438,10 @@ fn spawn_subagent_watch(
 }
 
 #[cfg(test)]
+#[path = "state/cache_tests.rs"]
+mod cache_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeDelta;
