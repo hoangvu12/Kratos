@@ -5947,6 +5947,12 @@ impl Composer {
             return true;
         }
         let state = self.state.read(cx);
+        if state.registry().is_some()
+            && crate::request_routing::selected_target(state)
+                .map_or(true, |target| !target.is_connected())
+        {
+            return true;
+        }
         if state.review_comment_flush_pending(&self.current_key) {
             return true;
         }
@@ -6031,6 +6037,12 @@ impl Composer {
             cx.notify();
             return;
         };
+        if !engine.is_connected() {
+            self.failure = Some("Engine is offline; reconnecting".into());
+            self.failure_key = Some(self.current_key.clone());
+            cx.notify();
+            return;
+        }
         // Chat id: existing selection, or client-minted for the new-chat canvas
         // (the chat then appears from the doc host once the doc materializes).
         let (chat_id, is_new) = match self.state.read(cx).selected_chat.clone() {
