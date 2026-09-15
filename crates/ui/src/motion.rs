@@ -147,8 +147,18 @@ fn pulse_lease_every(view: EntityId, stride: u64, cx: &mut App) {
     if !clock.running {
         clock.running = true;
         cx.spawn(async move |cx| {
+            // The precise OS-timer clock paces frames from a dedicated thread;
+            // its wakes are foreign-thread scheduling, which gpui's
+            // deterministic test scheduler forbids — a tick landing after a
+            // test's scheduler finished panics inside the oneshot drop path
+            // and the double-panic aborts the whole test process. Tests take
+            // the executor-timer path, exactly as non-Windows platforms do.
             #[cfg(windows)]
-            let mut precise_clock = windows_pulse::Clock::new(PULSE_TICK);
+            let mut precise_clock = if cfg!(test) {
+                None
+            } else {
+                windows_pulse::Clock::new(PULSE_TICK)
+            };
             loop {
                 #[cfg(windows)]
                 let precise_tick = if let Some(clock) = precise_clock.as_mut() {
