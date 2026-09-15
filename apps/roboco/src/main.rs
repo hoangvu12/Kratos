@@ -5,6 +5,7 @@
 
 mod daemon;
 mod paths;
+mod pairing_cli;
 mod update_cli;
 
 use clap::{Parser, Subcommand};
@@ -28,6 +29,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Administer this engine.
+    Engine {
+        #[command(subcommand)]
+        command: pairing_cli::EngineCommand,
+    },
     /// Run the local engine without a UI.
     Headless,
     /// Show the local engine status.
@@ -142,6 +148,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
+        Some(Command::Engine { command }) => pairing_cli::run(command, &paths::data_dir()),
         Some(Command::Headless) => {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(async {

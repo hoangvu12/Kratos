@@ -274,7 +274,7 @@ impl EngineHandle {
         //
         // Best-effort — losing the bind race with another engine costs other
         // viewports, not this one.
-        let ipc_task = match roboco_engine::serve_ipc(engine_config.ipc_port, service).await {
+        let ipc_task = match roboco_engine::serve_engine_ipc(engine_config.ipc_port, service, &engine_config.data_dir).await {
             Ok(task) => Some(task),
             Err(err) => {
                 tracing::warn!(

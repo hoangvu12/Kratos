@@ -181,6 +181,14 @@ async fn serve_ws_socket(stream: TcpStream, service: Arc<dyn RpcService>) {
             return;
         }
     };
+    serve_websocket(ws, service).await;
+}
+
+/// Run the same RPC dispatch over an already upgraded HTTP connection.
+pub async fn serve_websocket<S>(
+    ws: tokio_tungstenite::WebSocketStream<S>,
+    service: Arc<dyn RpcService>,
+) where S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static {
     let (mut sink, mut ws_stream) = ws.split();
     let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);

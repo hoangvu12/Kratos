@@ -20,6 +20,8 @@ pub mod change_requests;
 pub mod diff_sync;
 pub mod doc_host;
 pub mod instance_lock;
+pub mod listener;
+pub mod pairing;
 pub mod profile;
 pub mod registry;
 pub mod repos;
@@ -506,7 +508,7 @@ impl Engine {
             inner: runtime.core().rpc_service(),
             stop_tx,
         });
-        let server = serve_ipc(config.ipc_port, service).await?;
+        let server = serve_engine_ipc(config.ipc_port, service, &config.data_dir).await?;
 
         tokio::select! {
             result = shutdown_signal() => result?,
@@ -562,6 +564,18 @@ pub async fn serve_ipc(
     Ok(tokio::spawn(roboco_rpc::serve_ws_listener(
         listener, service,
     )))
+}
+
+/// Serve the engine's local HTTP pairing routes and native WebSocket RPC on one port.
+pub async fn serve_engine_ipc(
+    port: u16,
+    service: Arc<dyn roboco_rpc::RpcService>,
+    data_dir: &Path,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+    let pairing = pairing::PairingStore::open(data_dir)?;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    tracing::info!(address = %listener.local_addr()?, "engine local listener ready");
+    Ok(tokio::spawn(listener::serve_listener(listener, service, pairing)))
 }
 
 /// Best-effort human name for this device's registry row.
