@@ -58,6 +58,29 @@ pub const FILES_EDITOR_FONT_SIZE_MAX: f32 = 24.0;
 
 const FILE_NAME: &str = "ui-settings.json";
 const NEW_THREAD_BACKGROUND_DIR: &str = "new-thread-backgrounds";
+const DEFAULT_NEW_THREAD_BACKGROUND_FILE: &str = "default-new-thread-background.png";
+const DEFAULT_NEW_THREAD_BACKGROUND_BYTES: &[u8] =
+    include_bytes!("../assets/backgrounds/default-new-thread-background.png");
+
+/// Path of the bundled default new-thread background, materialized into the
+/// managed backgrounds directory on first use. It backs the new-thread canvas
+/// whenever no user background is installed; installing a custom one replaces
+/// it on screen, and removing the custom one falls back to it again. The file
+/// is never referenced by `ui-settings.json`, so the managed-file retirement
+/// in [`install_new_thread_composer_background`] leaves it alone.
+pub fn default_new_thread_background(cx: &App) -> Option<std::path::PathBuf> {
+    let store = cx.try_global::<SettingsStore>()?;
+    let destination = store
+        .data_dir
+        .join(NEW_THREAD_BACKGROUND_DIR)
+        .join(DEFAULT_NEW_THREAD_BACKGROUND_FILE);
+    if !destination.is_file() {
+        let parent = destination.parent()?;
+        std::fs::create_dir_all(parent).ok()?;
+        std::fs::write(&destination, DEFAULT_NEW_THREAD_BACKGROUND_BYTES).ok()?;
+    }
+    Some(destination)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -7163,11 +7163,13 @@ impl Shell {
         // contingent on a hero measurement or a navigation gesture.
         let artwork = new_thread_background_setting
             .as_ref()
-            .and_then(|background| {
+            .map(|background| std::path::PathBuf::from(&background.path))
+            .or_else(|| crate::settings::default_new_thread_background(cx))
+            .and_then(|path| {
                 crate::new_thread_background_effects::prepare(
                     new_thread_background_effect,
                     theme,
-                    std::path::Path::new(&background.path),
+                    &path,
                     cx,
                 )
             });
